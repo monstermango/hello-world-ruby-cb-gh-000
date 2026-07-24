@@ -1,15 +1,19 @@
-"""Gradio-App für Speaker Diarization mit pyannote (für Hugging Face Spaces)."""
+"""Gradio-App für Speaker Diarization mit pyannote (HF Space auf ZeroGPU)."""
 import os
 
 import gradio as gr
+import spaces
+import torch
 from pyannote.audio import Pipeline
 
 pipeline = Pipeline.from_pretrained(
     "pyannote/speaker-diarization-community-1",
     token=os.environ["HF_TOKEN"],
 )
+pipeline.to(torch.device("cuda"))
 
 
+@spaces.GPU(duration=120)
 def diarize(audio, num_speakers):
     if audio is None:
         return "Bitte zuerst Audio aufnehmen oder eine Datei hochladen."
