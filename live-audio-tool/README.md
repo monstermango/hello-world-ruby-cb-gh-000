@@ -18,12 +18,21 @@ und die **Inhalte visualisiert** – komplett ohne externe Bibliotheken oder Bui
   - Redeanteile pro Sprecher (Balken + Sprechzeit)
   - Häufigste Begriffe (Stopwörter DE/EN gefiltert, Größe nach Häufigkeit)
 - **Export**: Transkript als JSON (Segmente, Sprecher, Keywords) oder TXT.
-- **ML-Nachanalyse (optional)**: Läuft der [Diarisierungs-Server](diarization-server/)
-  (pyannote.audio), erscheint nach dem Stoppen der Button **„ML-Analyse“** – die
-  Aufnahme wird serverseitig präzise diarisiert und die heuristische Zuordnung
-  (Transkript, Redeanteile) automatisch korrigiert.
+- **ML-Nachanalyse (optional)**: Läuft der [Diarisierungs-Server](diarization-server/),
+  erscheint nach dem Stoppen der Button **„ML-Analyse“** – die Aufnahme wird
+  serverseitig per Sprecher-Embeddings präzise diarisiert und die heuristische
+  Zuordnung (Transkript, Redeanteile) automatisch korrigiert. Funktioniert ohne
+  Token/Downloads; optional mit pyannote.audio für noch bessere Qualität.
 
 ## Starten
+
+Alles zusammen (Web-App + ML-Server, richtet beim ersten Mal die Python-Umgebung ein):
+
+```sh
+./live-audio-tool/run.sh              # App: http://localhost:8000, ML: Port 8001
+```
+
+Nur die Web-App (ohne ML-Nachanalyse):
 
 ```sh
 ruby live-audio-tool/server.rb        # startet auf http://localhost:8000

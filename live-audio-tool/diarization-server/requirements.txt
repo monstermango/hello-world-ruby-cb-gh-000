@@ -1,7 +1,11 @@
+# Basis: lauffähig ohne Token / externe Modell-Downloads
 fastapi>=0.110
 uvicorn>=0.29
 python-multipart>=0.0.9
-# ML-Stack (groß – Torch bringt mehrere hundert MB mit)
 torch>=2.1
-torchaudio>=2.1
-pyannote.audio>=3.1
+resemblyzer>=0.1.4
+scikit-learn>=1.3
+librosa>=0.10
+
+# Optionales Qualitäts-Upgrade (Hugging-Face-Token + Modell-Lizenz nötig):
+#   pip install -r requirements-pyannote.txt

@@ -775,7 +775,8 @@ async function runMlDiarization() {
     const data = await res.json();
     applyMlSegments(data.segments || []);
     state.mlApplied = true;
-    setStatus("ML-Diarisierung angewendet – " + new Set(data.speakers).size + " Sprecher erkannt");
+    setStatus("ML-Diarisierung angewendet – " + new Set(data.speakers).size
+      + " Sprecher erkannt (Engine: " + (data.engine || "unbekannt") + ")");
   } catch (e) {
     setStatus("ML-Analyse fehlgeschlagen: " + e.message, true);
   }

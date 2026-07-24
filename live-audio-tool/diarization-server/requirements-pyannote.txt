@@ -1,0 +1,4 @@
+# Optionale pyannote-Engine (präziser, aber zugangsbeschränktes Modell):
+# HF_TOKEN setzen und Lizenz akzeptieren, siehe README.
+torchaudio>=2.1
+pyannote.audio>=3.1
