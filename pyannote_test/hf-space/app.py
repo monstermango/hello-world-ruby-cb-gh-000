@@ -326,4 +326,4 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Sprecher-Analyse") as demo:
     tabelle.select(eintrag_anzeigen, [pfade_state], [vorschau, datei])
     demo.load(dashboard_laden, None, [tabelle, pfade_state])
 
-demo.launch()
+demo.launch(pwa=True)
