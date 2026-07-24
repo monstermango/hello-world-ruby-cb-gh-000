@@ -1,0 +1,7 @@
+# Automatisches HTTPS (Let's Encrypt) + Zugriffsschutz
+{$DOMAIN} {
+	basic_auth {
+		{$BASIC_AUTH_USER} {$BASIC_AUTH_HASH}
+	}
+	reverse_proxy web:8000
+}

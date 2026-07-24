@@ -1,0 +1,7 @@
+# Web-App: statischer Server + ML-Proxy (Ruby-Stdlib, keine Gems)
+FROM ruby:3.3-slim
+WORKDIR /app
+COPY server.rb index.html ./
+ENV ML_BACKEND=http://ml:8001
+EXPOSE 8000
+CMD ["ruby", "server.rb", "8000"]

@@ -42,6 +42,14 @@ ruby live-audio-tool/server.rb 9090   # alternativer Port
 Dann im Browser `http://localhost:8000` öffnen und **Aufnahme starten**.
 Alternativ genügt es auch, `index.html` direkt in Chrome zu öffnen.
 
+## Dauerbetrieb in der Cloud
+
+Für den permanenten Betrieb auf einem eigenen Server (jederzeit vom Handy
+erreichbar, mit eigener Domain, HTTPS und Passwortschutz) liegt in
+[`deploy/`](deploy/) ein komplettes Docker-Compose-Setup samt Anleitung –
+Kurzfassung: VPS mieten, DNS-Eintrag setzen, `.env` ausfüllen,
+`docker compose up -d --build`.
+
 ## Vom Handy nutzen
 
 Das Handy ist nur der Bildschirm + das Mikrofon – die Rechenarbeit läuft auf einem
