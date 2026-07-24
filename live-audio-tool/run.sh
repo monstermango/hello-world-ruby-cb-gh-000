@@ -14,6 +14,12 @@ if [ ! -d diarization-server/.venv ]; then
   diarization-server/.venv/bin/pip install -r diarization-server/requirements.txt
 fi
 
+# Mit HF_TOKEN wird automatisch die präzisere pyannote-Engine nachinstalliert
+if [ -n "${HF_TOKEN:-}" ] && ! diarization-server/.venv/bin/python -c "import pyannote.audio" 2>/dev/null; then
+  echo "HF_TOKEN gesetzt – installiere pyannote-Engine (einmalig) …"
+  diarization-server/.venv/bin/pip install -r diarization-server/requirements-pyannote.txt
+fi
+
 diarization-server/.venv/bin/uvicorn --app-dir diarization-server server:app --port 8001 &
 ML_PID=$!
 trap 'kill $ML_PID 2>/dev/null' EXIT

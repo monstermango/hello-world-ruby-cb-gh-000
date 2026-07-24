@@ -262,9 +262,12 @@ const state = {
   mlApplied: false,
 };
 
-// Serverseitiges ML-Modell (pyannote) – Adresse per localStorage überschreibbar:
+// Serverseitiges ML-Modell – Standard: gleiche Adresse wie die Web-App
+// (der Ruby-Server leitet /ml/* an den Diarisierungs-Server weiter; so
+// funktioniert es auch vom Handy/über einen Tunnel). Übersteuerbar per
 //   localStorage.setItem("mlServer", "http://host:port")
-const ML_SERVER = localStorage.getItem("mlServer") || "http://localhost:8001";
+const ML_SERVER = localStorage.getItem("mlServer")
+  || (location.protocol.startsWith("http") ? location.origin + "/ml" : "http://localhost:8001");
 
 /* ============================== Audio & Features ============================== */
 

@@ -42,6 +42,30 @@ ruby live-audio-tool/server.rb 9090   # alternativer Port
 Dann im Browser `http://localhost:8000` öffnen und **Aufnahme starten**.
 Alternativ genügt es auch, `index.html` direkt in Chrome zu öffnen.
 
+## Vom Handy nutzen
+
+Das Handy ist nur der Bildschirm + das Mikrofon – die Rechenarbeit läuft auf einem
+Rechner (PC/Mac/Server), auf dem `./live-audio-tool/run.sh` gestartet wird. Der
+Ruby-Server leitet `/ml/*` an den ML-Server weiter, daher reicht **eine** Adresse.
+
+Der Mikrofonzugriff im Handy-Browser erfordert **HTTPS** – eine `http://192.168…`-
+Adresse genügt nicht. Drei einfache Wege zu einer HTTPS-Adresse:
+
+| Weg | Befehl auf dem Rechner | Bemerkung |
+|---|---|---|
+| **Tailscale** (empfohlen) | `tailscale serve 8000` | privat, kostenlos; Handy braucht die Tailscale-App im selben Konto |
+| **cloudflared** | `cloudflared tunnel --url http://localhost:8000` | öffentliche Wegwerf-URL, kein Konto nötig |
+| **ngrok** | `ngrok http 8000` | öffentliche URL, kostenloses Konto |
+
+Die angezeigte `https://…`-Adresse auf dem Handy öffnen – fertig. Für **maximale
+Qualität** vor dem Start auf dem Rechner `export HF_TOKEN=hf_…` setzen (siehe
+[diarization-server/README.md](diarization-server/README.md)); `run.sh`
+installiert die pyannote-Engine dann automatisch.
+
+Auf iPhones läuft die Live-Transkription über Safari (Web Speech API, iOS 14.5+);
+falls ein Browser sie nicht unterstützt, funktionieren Visualisierung,
+Sprechererkennung und ML-Analyse trotzdem.
+
 ## Hinweise & Grenzen
 
 - Mikrofonzugriff braucht einen *secure context* (localhost oder HTTPS).
