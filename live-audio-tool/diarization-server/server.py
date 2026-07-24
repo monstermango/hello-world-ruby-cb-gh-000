@@ -30,7 +30,14 @@ import tempfile
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
-PYANNOTE_MODEL = os.environ.get("DIARIZATION_MODEL", "pyannote/speaker-diarization-3.1")
+# Kandidaten in Reihenfolge der Präferenz; per DIARIZATION_MODEL übersteuerbar.
+# community-1 ist das neuere, präzisere Modell (pyannote.audio >= 4),
+# speaker-diarization-3.1 der bewährte Klassiker. Beide sind "gated" –
+# Lizenz auf der jeweiligen Modellseite akzeptieren.
+PYANNOTE_CANDIDATES = (
+    [os.environ["DIARIZATION_MODEL"]] if os.environ.get("DIARIZATION_MODEL")
+    else ["pyannote/speaker-diarization-community-1", "pyannote/speaker-diarization-3.1"]
+)
 MAX_SPEAKERS = 6
 
 app = FastAPI(title="Diarization Server", version="2.0")
@@ -53,28 +60,43 @@ def hf_token():
 
 # ----------------------------- Engine: pyannote -----------------------------
 
+_pyannote_model_used = None
+
+
+def load_pipeline(model):
+    from pyannote.audio import Pipeline
+    try:
+        # pyannote.audio >= 4.0
+        return Pipeline.from_pretrained(model, token=hf_token())
+    except TypeError:
+        # pyannote.audio 3.x
+        return Pipeline.from_pretrained(model, use_auth_token=hf_token())
+
+
 def get_pyannote():
-    """Lädt die pyannote-Pipeline beim ersten Aufruf. Wirft bei Problemen."""
-    global _pyannote_pipeline
+    """Lädt beim ersten Aufruf die erste funktionierende Pipeline der Kandidaten."""
+    global _pyannote_pipeline, _pyannote_model_used
     if _pyannote_pipeline is not None:
         return _pyannote_pipeline
 
     import torch
-    from pyannote.audio import Pipeline
 
-    try:
-        # pyannote.audio >= 4.0
-        pipeline = Pipeline.from_pretrained(PYANNOTE_MODEL, token=hf_token())
-    except TypeError:
-        # pyannote.audio 3.x
-        pipeline = Pipeline.from_pretrained(PYANNOTE_MODEL, use_auth_token=hf_token())
-    if pipeline is None:
-        raise RuntimeError(f"Pipeline {PYANNOTE_MODEL} konnte nicht geladen werden "
-                           "(Modell-Lizenz auf Hugging Face akzeptiert?)")
-    if torch.cuda.is_available():
-        pipeline.to(torch.device("cuda"))
-    _pyannote_pipeline = pipeline
-    return _pyannote_pipeline
+    errors = []
+    for model in PYANNOTE_CANDIDATES:
+        try:
+            pipeline = load_pipeline(model)
+            if pipeline is None:
+                raise RuntimeError("Lizenz auf Hugging Face akzeptiert?")
+        except Exception as exc:
+            errors.append(f"{model}: {exc}")
+            continue
+        if torch.cuda.is_available():
+            pipeline.to(torch.device("cuda"))
+        _pyannote_pipeline = pipeline
+        _pyannote_model_used = model
+        return _pyannote_pipeline
+
+    raise RuntimeError("Keine pyannote-Pipeline ladbar – " + " | ".join(errors))
 
 
 def diarize_pyannote(wav_path, num_speakers):
@@ -225,8 +247,8 @@ def health():
             "embedded": embedded_available(),
             "pyannote": bool(hf_token()),
         },
-        "pyannote_model": PYANNOTE_MODEL,
-        "pyannote_loaded": _pyannote_pipeline is not None,
+        "pyannote_models": PYANNOTE_CANDIDATES,
+        "pyannote_loaded": _pyannote_model_used,
         "ffmpeg": shutil.which("ffmpeg") is not None,
     }
 
@@ -255,6 +277,7 @@ async def diarize(
         if want == "pyannote":
             try:
                 segments = diarize_pyannote(wav, num_speakers)
+                used = f"pyannote ({_pyannote_model_used})"
             except Exception as exc:
                 if engine == "pyannote":  # explizit angefordert -> Fehler melden
                     raise HTTPException(status_code=503, detail=f"pyannote nicht verfügbar: {exc}")

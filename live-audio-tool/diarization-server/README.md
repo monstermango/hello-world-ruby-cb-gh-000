@@ -35,9 +35,14 @@ uvicorn server:app --port 8001
 
 ### Optional: pyannote-Engine aktivieren
 
-1. Nutzungsbedingungen akzeptieren:
-   [pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1)
-   und [pyannote/segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0)
+Der Server probiert die Modelle in dieser Reihenfolge (per `DIARIZATION_MODEL`
+übersteuerbar): **speaker-diarization-community-1** (neuer, präziser), dann
+**speaker-diarization-3.1**. Es genügt, die Lizenz für eines davon zu akzeptieren.
+
+1. Nutzungsbedingungen akzeptieren (kostenlos, mit HF-Account):
+   [community-1](https://huggingface.co/pyannote/speaker-diarization-community-1) –
+   oder [3.1](https://huggingface.co/pyannote/speaker-diarization-3.1) plus
+   [segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0)
 2. Token erstellen: <https://huggingface.co/settings/tokens> (Read genügt)
 3. ```sh
    pip install -r requirements-pyannote.txt
