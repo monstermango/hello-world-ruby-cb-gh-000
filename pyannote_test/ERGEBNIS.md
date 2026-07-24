@@ -27,6 +27,41 @@ WAV geladen: shape (1, 48000), 16000 Hz, Dauer 3.0s
 Alle Tests bestanden.
 ```
 
+## Teil 2: Vortrainierte Diarization-Pipeline (mit HF-Token)
+
+Mit einem Hugging-Face-Token wurde zusätzlich `pyannote/speaker-diarization-3.1`
+auf einem synthetisch erzeugten 23-Sekunden-Dialog (zwei espeak-ng-Stimmen,
+vier Sprecherwechsel) getestet — **erfolgreich**:
+
+```
+Diarization von dialog.wav (CPU) ...
+Fertig in 17.0s
+
+Erkannte Sprecher-Segmente:
+    0.03s –   6.06s  SPEAKER_00
+    7.05s –  12.67s  SPEAKER_01
+   13.56s –  19.25s  SPEAKER_00
+   20.23s –  23.13s  SPEAKER_01
+
+Anzahl erkannter Sprecher: 2
+```
+
+Alle vier Sprecherwechsel und beide Sprecher wurden korrekt erkannt.
+Laufzeit auf CPU: ca. 0,7× Echtzeit (17 s für 23,4 s Audio).
+
+### Benötigtes Setup für die vortrainierte Pipeline
+
+- `pyannote/speaker-diarization-community-1` (Standard in pyannote.audio 4.x) war
+  für den Token **nicht freigeschaltet** (HTTP 403) — und auch die 3.1-Pipeline
+  lädt unter 4.x eine Datei aus diesem Repo. Deshalb Ausweichlösung:
+  **pyannote.audio 3.3.2** mit gepinnten Abhängigkeiten:
+  `torch==2.7.1` (CPU), `torchaudio==2.7.1`, `huggingface_hub==0.25.2`,
+  `soundfile`, `matplotlib`.
+- Für torch ≥ 2.6 muss `TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1` gesetzt werden,
+  da die pyannote-3.x-Checkpoints sonst am neuen `weights_only=True`-Default
+  scheitern.
+- Token als `HF_TOKEN`-Umgebungsvariable übergeben (nie einchecken).
+
 ## Hinweise
 
 - **FFmpeg musste nachinstalliert werden** (`apt-get install -y ffmpeg`), sonst kann
