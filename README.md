@@ -65,3 +65,10 @@ A small piece of coding history—a handwritten version of Hello World in C (an 
 _[Hello World! by Brian Kernighan, from Artsy's Algorythm Auction](https://www.artsy.net/artwork/brian-kernighan-hello-world) based on a 1974 Bell Laboratories internal memorandum by Brian Kernighan, Programming in C: A Tutorial, which contains the first known version._
 
 <p class='util--hide'>View <a href='https://learn.co/lessons/hello-world-ruby'>Hello World</a> on Learn.co and start learning to code for free.</p>
+
+## Live-Audio-Analyse-Tool
+
+In [`live-audio-tool/`](live-audio-tool/) liegt ein Browser-Tool, das live Mikrofon-Audio verarbeitet,
+Sprecher heuristisch zuordnet und Inhalte visualisiert (Transkript, Redeanteile, Schlagwörter).
+Start: `ruby live-audio-tool/server.rb` und dann <http://localhost:8000> öffnen.
+Details: [live-audio-tool/README.md](live-audio-tool/README.md)

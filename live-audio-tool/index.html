@@ -1,0 +1,765 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Live-Audio-Analyse – Sprecher &amp; Inhalte</title>
+<style>
+  :root {
+    --bg: #0f1420;
+    --panel: #171e2e;
+    --panel-2: #1d2638;
+    --border: #2a3550;
+    --text: #e8edf7;
+    --muted: #8b96ad;
+    --accent: #4f8cff;
+    --danger: #ff5470;
+    --ok: #3ddc84;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    min-height: 100vh;
+  }
+  header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 20px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+  header h1 { font-size: 18px; font-weight: 600; margin-right: auto; }
+  header h1 span { color: var(--accent); }
+  select, button {
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 14px;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  select:focus, button:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  button:hover { border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  #btnStart.recording { background: var(--danger); border-color: var(--danger); color: #fff; }
+  .grid {
+    display: grid;
+    grid-template-columns: minmax(340px, 1fr) minmax(340px, 1.2fr);
+    gap: 16px;
+    padding: 16px 20px;
+    max-width: 1400px;
+    margin: 0 auto;
+  }
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px;
+  }
+  .panel h2 {
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    color: var(--muted);
+    margin-bottom: 10px;
+  }
+  .col { display: flex; flex-direction: column; gap: 16px; }
+  canvas { width: 100%; border-radius: 8px; background: #0a0e18; display: block; }
+  #status {
+    font-size: 13px;
+    color: var(--muted);
+  }
+  #status .dot {
+    display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    background: var(--muted); margin-right: 6px; vertical-align: middle;
+  }
+  #status.live .dot { background: var(--danger); animation: pulse 1.2s infinite; }
+  @keyframes pulse { 50% { opacity: .3; } }
+
+  /* Sprecher */
+  .speaker {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 10px; border-radius: 8px; margin-bottom: 8px;
+    background: var(--panel-2); border: 1px solid var(--border);
+    transition: box-shadow .15s;
+  }
+  .speaker.active { box-shadow: 0 0 0 2px var(--speaker-color, var(--accent)); }
+  .speaker .swatch {
+    width: 14px; height: 14px; border-radius: 50%; flex-shrink: 0;
+    background: var(--speaker-color, var(--accent));
+  }
+  .speaker input {
+    background: transparent; border: none; color: var(--text);
+    font-size: 14px; font-weight: 600; width: 110px;
+  }
+  .speaker input:focus { outline: 1px solid var(--border); border-radius: 4px; }
+  .speaker .bar-wrap { flex: 1; height: 8px; background: #0a0e18; border-radius: 4px; overflow: hidden; }
+  .speaker .bar { height: 100%; width: 0; background: var(--speaker-color, var(--accent)); transition: width .4s; }
+  .speaker .time { font-size: 12px; color: var(--muted); min-width: 52px; text-align: right; font-variant-numeric: tabular-nums; }
+  .speaker .pin {
+    font-size: 11px; padding: 3px 8px;
+  }
+  .speaker .pin.pinned { background: var(--speaker-color, var(--accent)); color: #0a0e18; border-color: transparent; }
+
+  /* Transkript */
+  #transcript {
+    max-height: 520px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px;
+  }
+  .seg {
+    display: flex; gap: 10px; align-items: flex-start;
+    padding: 8px 10px; background: var(--panel-2); border-radius: 8px;
+    border-left: 3px solid var(--speaker-color, var(--accent));
+  }
+  .seg .meta { flex-shrink: 0; width: 118px; }
+  .seg .meta .who { font-weight: 600; font-size: 13px; color: var(--speaker-color, var(--accent)); }
+  .seg .meta .ts { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .seg .text { font-size: 14px; line-height: 1.45; }
+  .seg.interim { opacity: .55; font-style: italic; }
+  #transcriptEmpty { color: var(--muted); font-size: 13px; padding: 8px 2px; }
+
+  /* Schlüsselwörter */
+  #keywords { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; min-height: 34px; }
+  .kw {
+    background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 999px; padding: 4px 12px; color: var(--text);
+  }
+  .banner {
+    margin: 12px 20px 0; max-width: 1400px;
+    padding: 10px 14px; border-radius: 8px; font-size: 13px;
+    background: #3a2a12; border: 1px solid #7a5a20; color: #ffd58a;
+  }
+  .hidden { display: none !important; }
+  footer { padding: 10px 20px 24px; color: var(--muted); font-size: 12px; max-width: 1400px; margin: 0 auto; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🎙️ Live-Audio-Analyse <span>· Sprecher &amp; Inhalte</span></h1>
+  <div id="status"><span class="dot"></span><span id="statusText">Bereit</span></div>
+  <select id="lang" title="Sprache der Transkription">
+    <option value="de-DE" selected>Deutsch</option>
+    <option value="en-US">English</option>
+    <option value="fr-FR">Français</option>
+    <option value="es-ES">Español</option>
+  </select>
+  <button id="btnStart">● Aufnahme starten</button>
+  <button id="btnExportJson" disabled>Export JSON</button>
+  <button id="btnExportTxt" disabled>Export TXT</button>
+</header>
+
+<div id="speechWarning" class="banner hidden">
+  ⚠️ Dieser Browser unterstützt die Web Speech API nicht – Visualisierung und Sprechererkennung
+  funktionieren, aber es wird kein Transkript erzeugt. Empfohlen: Chrome oder Edge.
+</div>
+
+<div class="grid">
+  <div class="col">
+    <div class="panel">
+      <h2>Wellenform (live)</h2>
+      <canvas id="wave" height="90"></canvas>
+    </div>
+    <div class="panel">
+      <h2>Frequenzspektrum (live)</h2>
+      <canvas id="spectrum" height="120"></canvas>
+    </div>
+    <div class="panel">
+      <h2>Sprecher &amp; Redeanteile</h2>
+      <div id="speakers"></div>
+      <div id="speakersEmpty" style="color:var(--muted);font-size:13px;">
+        Sprecher werden automatisch anhand von Stimmmerkmalen (Tonhöhe, Klangfarbe) erkannt,
+        sobald die Aufnahme läuft. Mit „Fixieren“ kann ein Sprecher manuell festgehalten werden.
+      </div>
+    </div>
+    <div class="panel">
+      <h2>Häufigste Begriffe</h2>
+      <div id="keywords"><span style="color:var(--muted);font-size:13px;">Noch keine Inhalte.</span></div>
+    </div>
+  </div>
+
+  <div class="col">
+    <div class="panel" style="flex:1;">
+      <h2>Transkript</h2>
+      <div id="transcript">
+        <div id="transcriptEmpty">Das Transkript erscheint hier, sobald gesprochen wird.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<footer>
+  Alles läuft lokal im Browser – es werden keine Audiodaten an einen Server dieses Tools gesendet.
+  (Die Web-Speech-Transkription nutzt je nach Browser einen Cloud-Dienst des Browserherstellers.)
+  Die Sprecherzuordnung ist heuristisch (Tonhöhe &amp; spektraler Schwerpunkt) und funktioniert am
+  besten bei deutlich unterschiedlichen Stimmen.
+</footer>
+
+<script>
+"use strict";
+
+/* ============================== Konfiguration ============================== */
+
+const SPEAKER_COLORS = ["#4f8cff", "#3ddc84", "#ffb454", "#ff5470", "#c792ea", "#2ee6d6"];
+const MAX_SPEAKERS = 6;
+const VOICE_RMS_THRESHOLD = 0.015;   // ab wann "es wird gesprochen" gilt
+const PITCH_MIN = 60, PITCH_MAX = 400; // Hz, menschlicher Sprachbereich
+const SWITCH_HYSTERESIS = 6;         // Frames, bevor der aktive Sprecher wechselt
+const NEW_SPEAKER_DISTANCE = 0.30;   // Feature-Distanz, ab der ein neuer Sprecher angelegt wird
+const PROFILE_ADAPT = 0.02;          // wie schnell sich ein Sprecherprofil anpasst
+
+// Stopwörter (Deutsch + Englisch) für die Schlagwort-Auswertung
+const STOP = new Set([
+ "und","oder","aber","der","die","das","den","dem","des","ein","eine","einen","einem","einer","ist","sind",
+ "war","waren","sein","bin","bist","seid","hat","habe","haben","hatte","hatten","wird","werden","wurde",
+ "wurden","kann","können","konnte","könnte","muss","müssen","soll","sollen","sollte","will","wollen","wollte",
+ "mag","mögen","möchte","nicht","kein","keine","keinen","auch","noch","nur","schon","sehr","dann","denn",
+ "doch","wenn","weil","dass","da","so","wie","was","wer","wo","wann","warum","ich","du","er","sie","es","wir",
+ "ihr","ihnen","ihm","ihn","mich","dich","sich","uns","euch","mein","dein","unser","euer","mir","dir","man",
+ "zu","zum","zur","im","in","an","auf","aus","bei","mit","nach","von","vor","über","unter","für","um","durch",
+ "gegen","ohne","bis","als","mal","ja","nein","halt","eben","also","etwa","hier","dort","jetzt","heute",
+ "the","a","an","and","or","but","is","are","was","were","be","been","being","have","has","had","do","does",
+ "did","will","would","can","could","shall","should","may","might","must","not","no","yes","i","you","he",
+ "she","it","we","they","me","him","her","us","them","my","your","his","its","our","their","this","that",
+ "these","those","of","on","at","to","from","with","by","for","as","about","into","over","under","if","then",
+ "than","too","very","just","there","here","now"
+]);
+
+/* ============================== Zustand ============================== */
+
+const state = {
+  running: false,
+  startedAt: 0,
+  audioCtx: null,
+  analyser: null,
+  mediaStream: null,
+  timeData: null,
+  freqData: null,
+  speakers: [],            // {id, name, color, pitch, centroid, frames, pinnedUntil}
+  activeSpeaker: null,     // id oder null
+  candidateSpeaker: null,
+  candidateFrames: 0,
+  pinnedSpeaker: null,     // manuell fixierter Sprecher
+  activityLog: [],         // {t, speaker} – für Zuordnung der Transkript-Segmente
+  segments: [],            // {t0, t1, speaker, text}
+  wordCounts: new Map(),
+  recognition: null,
+  recognitionWanted: false,
+};
+
+/* ============================== Audio & Features ============================== */
+
+async function startAudio() {
+  state.mediaStream = await navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: true, noiseSuppression: true }
+  });
+  state.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const src = state.audioCtx.createMediaStreamSource(state.mediaStream);
+  state.analyser = state.audioCtx.createAnalyser();
+  state.analyser.fftSize = 2048;
+  state.analyser.smoothingTimeConstant = 0.6;
+  src.connect(state.analyser);
+  state.timeData = new Float32Array(state.analyser.fftSize);
+  state.freqData = new Uint8Array(state.analyser.frequencyBinCount);
+}
+
+function stopAudio() {
+  if (state.mediaStream) state.mediaStream.getTracks().forEach(t => t.stop());
+  if (state.audioCtx) state.audioCtx.close();
+  state.mediaStream = null;
+  state.audioCtx = null;
+  state.analyser = null;
+}
+
+function rms(buf) {
+  let s = 0;
+  for (let i = 0; i < buf.length; i++) s += buf[i] * buf[i];
+  return Math.sqrt(s / buf.length);
+}
+
+// Tonhöhenschätzung per Autokorrelation
+function estimatePitch(buf, sampleRate) {
+  const minLag = Math.floor(sampleRate / PITCH_MAX);
+  const maxLag = Math.floor(sampleRate / PITCH_MIN);
+  let bestLag = -1, bestCorr = 0;
+  for (let lag = minLag; lag <= maxLag && lag < buf.length / 2; lag++) {
+    let corr = 0;
+    for (let i = 0; i < buf.length - lag; i++) corr += buf[i] * buf[i + lag];
+    if (corr > bestCorr) { bestCorr = corr; bestLag = lag; }
+  }
+  if (bestLag < 0) return null;
+  // Normierung gegen Energie; schwache Korrelation = kein stimmhafter Laut
+  let energy = 0;
+  for (let i = 0; i < buf.length; i++) energy += buf[i] * buf[i];
+  if (energy === 0 || bestCorr / energy < 0.3) return null;
+  return sampleRate / bestLag;
+}
+
+// Spektraler Schwerpunkt (Klangfarbe / Helligkeit der Stimme)
+function spectralCentroid(freqData, sampleRate, fftSize) {
+  let num = 0, den = 0;
+  const binHz = sampleRate / fftSize;
+  for (let i = 0; i < freqData.length; i++) {
+    num += i * binHz * freqData[i];
+    den += freqData[i];
+  }
+  return den > 0 ? num / den : 0;
+}
+
+/* ============================== Sprecher-Zuordnung ============================== */
+
+// Merkmalsvektor: log-Tonhöhe und log-Schwerpunkt, grob normiert auf [0..1]
+function featureVector(pitch, centroid) {
+  const p = (Math.log(pitch) - Math.log(PITCH_MIN)) / (Math.log(PITCH_MAX) - Math.log(PITCH_MIN));
+  const c = Math.min(1, Math.max(0, (Math.log(Math.max(centroid, 100)) - Math.log(100)) / (Math.log(6000) - Math.log(100))));
+  return [p, c];
+}
+
+function featureDistance(a, b) {
+  // Tonhöhe stärker gewichten als Klangfarbe
+  const dp = (a[0] - b[0]) * 1.4;
+  const dc = (a[1] - b[1]) * 0.7;
+  return Math.sqrt(dp * dp + dc * dc);
+}
+
+function classifyFrame(pitch, centroid) {
+  const f = featureVector(pitch, centroid);
+
+  if (state.pinnedSpeaker !== null) {
+    const sp = state.speakers.find(s => s.id === state.pinnedSpeaker);
+    if (sp) { adaptProfile(sp, f); return sp.id; }
+  }
+
+  let best = null, bestDist = Infinity;
+  for (const sp of state.speakers) {
+    const d = featureDistance(f, [sp.pitch, sp.centroid]);
+    if (d < bestDist) { bestDist = d; best = sp; }
+  }
+
+  if (!best || (bestDist > NEW_SPEAKER_DISTANCE && state.speakers.length < MAX_SPEAKERS)) {
+    const id = state.speakers.length;
+    const sp = {
+      id,
+      name: "Sprecher " + (id + 1),
+      color: SPEAKER_COLORS[id % SPEAKER_COLORS.length],
+      pitch: f[0], centroid: f[1],
+      frames: 0,
+    };
+    state.speakers.push(sp);
+    renderSpeakers();
+    return commitCandidate(sp.id, true);
+  }
+
+  adaptProfile(best, f);
+  return commitCandidate(best.id, false);
+}
+
+function adaptProfile(sp, f) {
+  sp.pitch += (f[0] - sp.pitch) * PROFILE_ADAPT;
+  sp.centroid += (f[1] - sp.centroid) * PROFILE_ADAPT;
+}
+
+// Hysterese: erst nach mehreren übereinstimmenden Frames wechseln
+function commitCandidate(id, immediate) {
+  if (immediate || state.activeSpeaker === null) {
+    state.activeSpeaker = id;
+    state.candidateSpeaker = null;
+    state.candidateFrames = 0;
+    return id;
+  }
+  if (id === state.activeSpeaker) {
+    state.candidateSpeaker = null;
+    state.candidateFrames = 0;
+    return id;
+  }
+  if (id === state.candidateSpeaker) {
+    state.candidateFrames++;
+    if (state.candidateFrames >= SWITCH_HYSTERESIS) {
+      state.activeSpeaker = id;
+      state.candidateSpeaker = null;
+      state.candidateFrames = 0;
+    }
+  } else {
+    state.candidateSpeaker = id;
+    state.candidateFrames = 1;
+  }
+  return state.activeSpeaker;
+}
+
+// Wer hat im Zeitraum [t0, t1] am meisten gesprochen?
+function dominantSpeaker(t0, t1) {
+  const counts = new Map();
+  for (const e of state.activityLog) {
+    if (e.t >= t0 && e.t <= t1) counts.set(e.speaker, (counts.get(e.speaker) || 0) + 1);
+  }
+  let best = null, bestN = 0;
+  for (const [id, n] of counts) if (n > bestN) { bestN = n; best = id; }
+  if (best === null && state.activityLog.length) best = state.activityLog[state.activityLog.length - 1].speaker;
+  return best;
+}
+
+/* ============================== Spracherkennung ============================== */
+
+const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+function startRecognition() {
+  if (!SpeechRec) return;
+  const rec = new SpeechRec();
+  rec.lang = document.getElementById("lang").value;
+  rec.continuous = true;
+  rec.interimResults = true;
+
+  let segStart = now();
+
+  rec.onresult = (ev) => {
+    let interim = "";
+    for (let i = ev.resultIndex; i < ev.results.length; i++) {
+      const res = ev.results[i];
+      if (res.isFinal) {
+        const text = res[0].transcript.trim();
+        if (text) {
+          const t1 = now();
+          const speaker = dominantSpeaker(segStart, t1);
+          state.segments.push({ t0: segStart, t1, speaker, text });
+          addWords(text, speaker);
+          renderSegment(state.segments[state.segments.length - 1]);
+          renderKeywords();
+          updateExportButtons();
+        }
+        segStart = now();
+      } else {
+        interim += res[0].transcript;
+      }
+    }
+    renderInterim(interim);
+  };
+
+  rec.onend = () => {
+    // Chrome beendet die Erkennung periodisch – bei laufender Aufnahme neu starten
+    if (state.running && state.recognitionWanted) {
+      try { rec.start(); } catch (e) { /* bereits gestartet */ }
+    }
+  };
+  rec.onerror = (e) => {
+    if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+      state.recognitionWanted = false;
+      setStatus("Transkription nicht erlaubt – nur Visualisierung aktiv", true);
+    }
+  };
+
+  state.recognition = rec;
+  state.recognitionWanted = true;
+  rec.start();
+}
+
+function stopRecognition() {
+  state.recognitionWanted = false;
+  if (state.recognition) { try { state.recognition.stop(); } catch (e) {} }
+  state.recognition = null;
+  renderInterim("");
+}
+
+/* ============================== Inhalts-Statistik ============================== */
+
+function addWords(text, speaker) {
+  const words = text.toLowerCase().replace(/[^\p{L}\p{N}\s-]/gu, "").split(/\s+/);
+  for (const w of words) {
+    if (w.length < 3 || STOP.has(w)) continue;
+    state.wordCounts.set(w, (state.wordCounts.get(w) || 0) + 1);
+  }
+}
+
+/* ============================== Rendering ============================== */
+
+const waveCanvas = document.getElementById("wave");
+const specCanvas = document.getElementById("spectrum");
+
+function fitCanvas(c) {
+  const r = c.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  c.width = Math.round(r.width * dpr);
+  c.height = Math.round(parseInt(c.getAttribute("height"), 10) * dpr);
+}
+
+function activeColor() {
+  const sp = state.speakers.find(s => s.id === state.activeSpeaker);
+  return sp ? sp.color : "#4f8cff";
+}
+
+function drawWave() {
+  const ctx = waveCanvas.getContext("2d");
+  const { width: w, height: h } = waveCanvas;
+  ctx.clearRect(0, 0, w, h);
+  if (!state.timeData) return;
+  ctx.beginPath();
+  ctx.strokeStyle = activeColor();
+  ctx.lineWidth = 2 * (window.devicePixelRatio || 1);
+  const n = state.timeData.length;
+  for (let i = 0; i < n; i++) {
+    const x = (i / (n - 1)) * w;
+    const y = h / 2 + state.timeData[i] * h * 0.9;
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+
+function drawSpectrum() {
+  const ctx = specCanvas.getContext("2d");
+  const { width: w, height: h } = specCanvas;
+  ctx.clearRect(0, 0, w, h);
+  if (!state.freqData) return;
+  const bins = 96;
+  const step = Math.floor(state.freqData.length / 2 / bins); // untere Hälfte reicht für Sprache
+  const bw = w / bins;
+  const color = activeColor();
+  for (let i = 0; i < bins; i++) {
+    let sum = 0;
+    for (let j = 0; j < step; j++) sum += state.freqData[i * step + j];
+    const v = sum / step / 255;
+    const bh = v * (h - 4);
+    ctx.fillStyle = color;
+    ctx.globalAlpha = 0.35 + v * 0.65;
+    ctx.fillRect(i * bw + 1, h - bh, bw - 2, bh);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function now() { return (performance.now() - state.startedAt) / 1000; }
+
+function fmtTime(sec) {
+  const m = Math.floor(sec / 60), s = Math.floor(sec % 60);
+  return String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0");
+}
+
+function renderSpeakers() {
+  const wrap = document.getElementById("speakers");
+  const empty = document.getElementById("speakersEmpty");
+  empty.classList.toggle("hidden", state.speakers.length > 0);
+
+  for (const sp of state.speakers) {
+    let el = document.getElementById("sp-" + sp.id);
+    if (!el) {
+      el = document.createElement("div");
+      el.className = "speaker";
+      el.id = "sp-" + sp.id;
+      el.style.setProperty("--speaker-color", sp.color);
+      el.innerHTML =
+        '<span class="swatch"></span>' +
+        '<input value="' + sp.name + '" aria-label="Sprechername">' +
+        '<div class="bar-wrap"><div class="bar"></div></div>' +
+        '<span class="time">00:00</span>' +
+        '<button class="pin" title="Diesen Sprecher manuell fixieren">Fixieren</button>';
+      el.querySelector("input").addEventListener("input", (e) => { sp.name = e.target.value; });
+      el.querySelector(".pin").addEventListener("click", () => {
+        state.pinnedSpeaker = state.pinnedSpeaker === sp.id ? null : sp.id;
+        renderSpeakers();
+      });
+      wrap.appendChild(el);
+    }
+    el.classList.toggle("active", sp.id === state.activeSpeaker);
+    const pin = el.querySelector(".pin");
+    pin.classList.toggle("pinned", state.pinnedSpeaker === sp.id);
+    pin.textContent = state.pinnedSpeaker === sp.id ? "Fixiert" : "Fixieren";
+  }
+  updateSpeakerBars();
+}
+
+function updateSpeakerBars() {
+  const total = state.speakers.reduce((a, s) => a + s.frames, 0) || 1;
+  const frameSec = 1 / 20; // Analyse läuft mit ~20 Hz
+  for (const sp of state.speakers) {
+    const el = document.getElementById("sp-" + sp.id);
+    if (!el) continue;
+    el.querySelector(".bar").style.width = (100 * sp.frames / total) + "%";
+    el.querySelector(".time").textContent = fmtTime(sp.frames * frameSec);
+  }
+}
+
+function renderSegment(seg) {
+  document.getElementById("transcriptEmpty")?.remove();
+  const sp = state.speakers.find(s => s.id === seg.speaker);
+  const el = document.createElement("div");
+  el.className = "seg";
+  el.style.setProperty("--speaker-color", sp ? sp.color : "#4f8cff");
+  const who = document.createElement("div");
+  who.className = "meta";
+  who.innerHTML = '<div class="who"></div><div class="ts"></div>';
+  who.querySelector(".who").textContent = sp ? sp.name : "Unbekannt";
+  who.querySelector(".ts").textContent = fmtTime(seg.t0) + " – " + fmtTime(seg.t1);
+  const txt = document.createElement("div");
+  txt.className = "text";
+  txt.textContent = seg.text;
+  el.append(who, txt);
+  const wrap = document.getElementById("transcript");
+  const interim = document.getElementById("interimSeg");
+  interim ? wrap.insertBefore(el, interim) : wrap.appendChild(el);
+  wrap.scrollTop = wrap.scrollHeight;
+}
+
+function renderInterim(text) {
+  let el = document.getElementById("interimSeg");
+  if (!text) { el?.remove(); return; }
+  const wrap = document.getElementById("transcript");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "interimSeg";
+    el.className = "seg interim";
+    el.innerHTML = '<div class="text"></div>';
+    wrap.appendChild(el);
+  }
+  el.style.setProperty("--speaker-color", activeColor());
+  el.querySelector(".text").textContent = text;
+  wrap.scrollTop = wrap.scrollHeight;
+}
+
+function renderKeywords() {
+  const wrap = document.getElementById("keywords");
+  const top = [...state.wordCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20);
+  if (!top.length) return;
+  const max = top[0][1];
+  wrap.innerHTML = "";
+  for (const [word, n] of top) {
+    const el = document.createElement("span");
+    el.className = "kw";
+    el.style.fontSize = (12 + 12 * (n / max)) + "px";
+    el.textContent = word;
+    el.title = n + "×";
+    wrap.appendChild(el);
+  }
+}
+
+function setStatus(text, warn) {
+  document.getElementById("statusText").textContent = text;
+  document.getElementById("status").classList.toggle("live", !!state.running && !warn);
+}
+
+function updateExportButtons() {
+  const has = state.segments.length > 0;
+  document.getElementById("btnExportJson").disabled = !has;
+  document.getElementById("btnExportTxt").disabled = !has;
+}
+
+/* ============================== Hauptschleifen ============================== */
+
+let analysisTimer = null;
+
+function analysisTick() {
+  if (!state.analyser) return;
+  state.analyser.getFloatTimeDomainData(state.timeData);
+  state.analyser.getByteFrequencyData(state.freqData);
+
+  const level = rms(state.timeData);
+  if (level > VOICE_RMS_THRESHOLD) {
+    const pitch = estimatePitch(state.timeData, state.audioCtx.sampleRate);
+    if (pitch) {
+      const centroid = spectralCentroid(state.freqData, state.audioCtx.sampleRate, state.analyser.fftSize);
+      const id = classifyFrame(pitch, centroid);
+      const sp = state.speakers.find(s => s.id === id);
+      if (sp) sp.frames++;
+      state.activityLog.push({ t: now(), speaker: id });
+      if (state.activityLog.length > 20 * 60 * 30) state.activityLog.splice(0, 20 * 60); // Speicher begrenzen
+    }
+  }
+  renderSpeakers();
+}
+
+function drawLoop() {
+  if (!state.running) return;
+  drawWave();
+  drawSpectrum();
+  requestAnimationFrame(drawLoop);
+}
+
+/* ============================== Export ============================== */
+
+function download(name, mime, content) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([content], { type: mime }));
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function exportJson() {
+  const data = {
+    exportedAt: new Date().toISOString(),
+    speakers: state.speakers.map(s => ({ id: s.id, name: s.name, speakingSeconds: +(s.frames / 20).toFixed(1) })),
+    keywords: [...state.wordCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 50)
+      .map(([word, count]) => ({ word, count })),
+    segments: state.segments.map(s => ({
+      start: +s.t0.toFixed(1), end: +s.t1.toFixed(1),
+      speaker: (state.speakers.find(x => x.id === s.speaker) || { name: "Unbekannt" }).name,
+      text: s.text
+    })),
+  };
+  download("transkript.json", "application/json", JSON.stringify(data, null, 2));
+}
+
+function exportTxt() {
+  const lines = state.segments.map(s => {
+    const name = (state.speakers.find(x => x.id === s.speaker) || { name: "Unbekannt" }).name;
+    return "[" + fmtTime(s.t0) + "] " + name + ": " + s.text;
+  });
+  download("transkript.txt", "text/plain;charset=utf-8", lines.join("\n"));
+}
+
+/* ============================== Start / Stop ============================== */
+
+async function start() {
+  try {
+    await startAudio();
+  } catch (e) {
+    setStatus("Mikrofonzugriff verweigert oder nicht verfügbar", true);
+    return;
+  }
+  state.running = true;
+  state.startedAt = performance.now();
+  fitCanvas(waveCanvas);
+  fitCanvas(specCanvas);
+  startRecognition();
+  analysisTimer = setInterval(analysisTick, 50); // 20 Hz
+  drawLoop();
+  const btn = document.getElementById("btnStart");
+  btn.textContent = "■ Aufnahme stoppen";
+  btn.classList.add("recording");
+  setStatus("Aufnahme läuft …");
+}
+
+function stop() {
+  state.running = false;
+  clearInterval(analysisTimer);
+  stopRecognition();
+  stopAudio();
+  const btn = document.getElementById("btnStart");
+  btn.textContent = "● Aufnahme starten";
+  btn.classList.remove("recording");
+  setStatus("Gestoppt – Daten bleiben erhalten, Export möglich");
+}
+
+/* ============================== Init ============================== */
+
+document.getElementById("btnStart").addEventListener("click", () => state.running ? stop() : start());
+document.getElementById("btnExportJson").addEventListener("click", exportJson);
+document.getElementById("btnExportTxt").addEventListener("click", exportTxt);
+document.getElementById("lang").addEventListener("change", () => {
+  if (state.running) { stopRecognition(); startRecognition(); }
+});
+window.addEventListener("resize", () => { fitCanvas(waveCanvas); fitCanvas(specCanvas); });
+
+if (!(window.SpeechRecognition || window.webkitSpeechRecognition)) {
+  document.getElementById("speechWarning").classList.remove("hidden");
+}
+fitCanvas(waveCanvas);
+fitCanvas(specCanvas);
+</script>
+</body>
+</html>
