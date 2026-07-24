@@ -154,6 +154,8 @@
     <option value="es-ES">Español</option>
   </select>
   <button id="btnStart">● Aufnahme starten</button>
+  <button id="btnMl" disabled class="hidden"
+    title="Aufnahme mit dem serverseitigen ML-Modell (pyannote) nachanalysieren">🤖 ML-Analyse</button>
   <button id="btnExportJson" disabled>Export JSON</button>
   <button id="btnExportTxt" disabled>Export TXT</button>
 </header>
@@ -254,7 +256,15 @@ const state = {
   wordCounts: new Map(),
   recognition: null,
   recognitionWanted: false,
+  recorder: null,          // MediaRecorder für die ML-Nachanalyse
+  recordedChunks: [],
+  mlAvailable: false,
+  mlApplied: false,
 };
+
+// Serverseitiges ML-Modell (pyannote) – Adresse per localStorage überschreibbar:
+//   localStorage.setItem("mlServer", "http://host:port")
+const ML_SERVER = localStorage.getItem("mlServer") || "http://localhost:8001";
 
 /* ============================== Audio & Features ============================== */
 
@@ -270,9 +280,23 @@ async function startAudio() {
   src.connect(state.analyser);
   state.timeData = new Float32Array(state.analyser.fftSize);
   state.freqData = new Uint8Array(state.analyser.frequencyBinCount);
+
+  // Aufnahme mitschneiden, damit das ML-Modell sie nachanalysieren kann
+  state.recordedChunks = [];
+  state.mlApplied = false;
+  if (window.MediaRecorder) {
+    try {
+      state.recorder = new MediaRecorder(state.mediaStream);
+      state.recorder.ondataavailable = (e) => { if (e.data.size) state.recordedChunks.push(e.data); };
+      state.recorder.start(1000);
+    } catch (e) { state.recorder = null; }
+  }
 }
 
 function stopAudio() {
+  if (state.recorder && state.recorder.state !== "inactive") {
+    try { state.recorder.stop(); } catch (e) {}
+  }
   if (state.mediaStream) state.mediaStream.getTracks().forEach(t => t.stop());
   if (state.audioCtx) state.audioCtx.close();
   state.mediaStream = null;
@@ -712,6 +736,117 @@ function exportTxt() {
   download("transkript.txt", "text/plain;charset=utf-8", lines.join("\n"));
 }
 
+/* ============================== ML-Diarisierung (serverseitig) ============================== */
+
+async function checkMlServer() {
+  try {
+    const res = await fetch(ML_SERVER + "/health", { signal: AbortSignal.timeout(2500) });
+    const info = await res.json();
+    state.mlAvailable = info.status === "ok";
+  } catch (e) {
+    state.mlAvailable = false;
+  }
+  const btn = document.getElementById("btnMl");
+  btn.classList.toggle("hidden", !state.mlAvailable);
+  updateMlButton();
+}
+
+function updateMlButton() {
+  const btn = document.getElementById("btnMl");
+  btn.disabled = state.running || !state.mlAvailable || !state.recordedChunks.length || state.mlApplied;
+}
+
+async function runMlDiarization() {
+  const btn = document.getElementById("btnMl");
+  btn.disabled = true;
+  setStatus("ML-Analyse läuft – Aufnahme wird auf dem Server ausgewertet …");
+  try {
+    const mime = (state.recorder && state.recorder.mimeType) || "audio/webm";
+    const blob = new Blob(state.recordedChunks, { type: mime });
+    const form = new FormData();
+    form.append("audio", blob, "aufnahme." + (mime.includes("ogg") ? "ogg" : "webm"));
+    if (state.speakers.length) form.append("num_speakers", String(state.speakers.length));
+
+    const res = await fetch(ML_SERVER + "/diarize", { method: "POST", body: form });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || ("HTTP " + res.status));
+    }
+    const data = await res.json();
+    applyMlSegments(data.segments || []);
+    state.mlApplied = true;
+    setStatus("ML-Diarisierung angewendet – " + new Set(data.speakers).size + " Sprecher erkannt");
+  } catch (e) {
+    setStatus("ML-Analyse fehlgeschlagen: " + e.message, true);
+  }
+  updateMlButton();
+}
+
+// Ersetzt die heuristische Zuordnung durch die ML-Segmente:
+// Sprecherliste, Redeanteile und Transkript-Zuordnung werden neu aufgebaut.
+function applyMlSegments(mlSegments) {
+  if (!mlSegments.length) return;
+
+  // ML-Labels (SPEAKER_00 …) in Reihenfolge des ersten Auftretens auf
+  // lokale Sprecher abbilden; vorhandene Namen/Farben bleiben erhalten.
+  const labelToId = new Map();
+  for (const seg of mlSegments) {
+    if (!labelToId.has(seg.speaker)) {
+      const idx = labelToId.size;
+      if (idx >= state.speakers.length) {
+        state.speakers.push({
+          id: idx,
+          name: "Sprecher " + (idx + 1),
+          color: SPEAKER_COLORS[idx % SPEAKER_COLORS.length],
+          pitch: 0.5, centroid: 0.5,
+          frames: 0,
+        });
+      }
+      labelToId.set(seg.speaker, idx);
+    }
+  }
+  // Nicht mehr belegte (überzählige heuristische) Sprecher entfernen
+  state.speakers.length = labelToId.size;
+  if (state.pinnedSpeaker !== null && state.pinnedSpeaker >= state.speakers.length) {
+    state.pinnedSpeaker = null;
+  }
+
+  // Redeanteile aus den ML-Segmentdauern neu berechnen (frames = Sekunden * 20)
+  for (const sp of state.speakers) sp.frames = 0;
+  for (const seg of mlSegments) {
+    const sp = state.speakers[labelToId.get(seg.speaker)];
+    sp.frames += Math.max(0, seg.end - seg.start) * 20;
+  }
+
+  // Jedes Transkript-Segment dem ML-Sprecher mit der größten Überlappung zuweisen
+  for (const seg of state.segments) {
+    let bestId = seg.speaker, bestOverlap = 0;
+    for (const ml of mlSegments) {
+      const overlap = Math.min(seg.t1, ml.end) - Math.max(seg.t0, ml.start);
+      if (overlap > bestOverlap) { bestOverlap = overlap; bestId = labelToId.get(ml.speaker); }
+    }
+    seg.speaker = bestId;
+  }
+
+  rebuildSpeakerPanel();
+  rebuildTranscript();
+}
+
+function rebuildSpeakerPanel() {
+  document.getElementById("speakers").innerHTML = "";
+  renderSpeakers();
+}
+
+function rebuildTranscript() {
+  const wrap = document.getElementById("transcript");
+  wrap.innerHTML = "";
+  if (!state.segments.length) {
+    wrap.innerHTML = '<div id="transcriptEmpty">Das Transkript erscheint hier, sobald gesprochen wird.</div>';
+    return;
+  }
+  for (const seg of state.segments) renderSegment(seg);
+}
+
 /* ============================== Start / Stop ============================== */
 
 async function start() {
@@ -731,6 +866,7 @@ async function start() {
   const btn = document.getElementById("btnStart");
   btn.textContent = "■ Aufnahme stoppen";
   btn.classList.add("recording");
+  updateMlButton();
   setStatus("Aufnahme läuft …");
 }
 
@@ -742,12 +878,16 @@ function stop() {
   const btn = document.getElementById("btnStart");
   btn.textContent = "● Aufnahme starten";
   btn.classList.remove("recording");
-  setStatus("Gestoppt – Daten bleiben erhalten, Export möglich");
+  updateMlButton();
+  setStatus(state.mlAvailable
+    ? "Gestoppt – Export möglich, ML-Analyse verfügbar"
+    : "Gestoppt – Daten bleiben erhalten, Export möglich");
 }
 
 /* ============================== Init ============================== */
 
 document.getElementById("btnStart").addEventListener("click", () => state.running ? stop() : start());
+document.getElementById("btnMl").addEventListener("click", runMlDiarization);
 document.getElementById("btnExportJson").addEventListener("click", exportJson);
 document.getElementById("btnExportTxt").addEventListener("click", exportTxt);
 document.getElementById("lang").addEventListener("change", () => {
@@ -760,6 +900,7 @@ if (!(window.SpeechRecognition || window.webkitSpeechRecognition)) {
 }
 fitCanvas(waveCanvas);
 fitCanvas(specCanvas);
+checkMlServer(); // ML-Server erkennen (Button erscheint nur, wenn erreichbar)
 </script>
 </body>
 </html>

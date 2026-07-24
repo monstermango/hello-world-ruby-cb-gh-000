@@ -1,0 +1,7 @@
+fastapi>=0.110
+uvicorn>=0.29
+python-multipart>=0.0.9
+# ML-Stack (groß – Torch bringt mehrere hundert MB mit)
+torch>=2.1
+torchaudio>=2.1
+pyannote.audio>=3.1
