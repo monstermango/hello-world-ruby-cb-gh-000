@@ -67,7 +67,12 @@ def get_pipeline():
                    "Bitte `pip install -r requirements.txt` ausführen.",
         )
 
-    pipeline = Pipeline.from_pretrained(MODEL_NAME, use_auth_token=token)
+    try:
+        # pyannote.audio >= 4.0
+        pipeline = Pipeline.from_pretrained(MODEL_NAME, token=token)
+    except TypeError:
+        # pyannote.audio 3.x
+        pipeline = Pipeline.from_pretrained(MODEL_NAME, use_auth_token=token)
     if torch.cuda.is_available():
         pipeline.to(torch.device("cuda"))
     _pipeline = pipeline
