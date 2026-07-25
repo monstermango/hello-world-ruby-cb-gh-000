@@ -244,12 +244,11 @@ def verlauf_laden():
         lokal = hf_hub_download(DATEN_REPO, f, repo_type="dataset", token=HF_TOKEN)
         with open(lokal, encoding="utf-8") as fh:
             fm, _ = _frontmatter(fh.read())
-        datum = str(fm.get("datum", ""))[:16].replace("T", " ")
         titel = fm.get("titel", f)
         karten += (f'<div class="sa-card"><div class="sa-card-title">{titel}</div>'
-                   f'<div class="sa-card-meta">📅 {datum} &nbsp; '
-                   f'👥 {fm.get("sprecher", "?")} &nbsp; '
-                   f'🕒 {_zeit(fm.get("dauer_s", 0))} min</div></div>')
+                   f'<div class="sa-card-meta">'
+                   f'<span>👥 {fm.get("sprecher", "?")} Sprecher</span>'
+                   f'<span>🕒 {_zeit(fm.get("dauer_s", 0))} min</span></div></div>')
         auswahl.append((f"{titel}", f))
     if not karten:
         karten = '<div class="sa-card">Noch keine Aufzeichnungen.</div>'
@@ -258,14 +257,14 @@ def verlauf_laden():
 
 def eintrag_anzeigen(pfad):
     if not pfad:
-        return "", None
+        return "", gr.update(value=None, visible=False)
     lokal = hf_hub_download(DATEN_REPO, pfad, repo_type="dataset", token=HF_TOKEN)
     with open(lokal, encoding="utf-8") as fh:
         text = fh.read()
     fm, body = _frontmatter(text)
     vorschau = (f"```yaml\n{yaml.safe_dump(fm, allow_unicode=True, sort_keys=False).strip()}\n```\n"
                 + body)
-    return vorschau, lokal
+    return vorschau, gr.update(value=lokal, visible=True)
 
 
 CSS = """
@@ -305,7 +304,8 @@ button.primary {width: 100%; min-height: 52px; font-size: 1.05rem;
 .sa-card {padding: 12px 14px; border-radius: 12px;
   background: rgba(128,128,128,.08); margin: 8px 0}
 .sa-card-title {font-weight: 600}
-.sa-card-meta {font-size: .85rem; opacity: .7; margin-top: 2px}
+.sa-card-meta {font-size: .85rem; opacity: .7; margin-top: 2px;
+  display: flex; gap: 14px; flex-wrap: wrap}
 
 @media (max-width: 640px) {
   .gradio-container {padding: 8px !important}
@@ -331,7 +331,7 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Sprecher-Analyse", css=CSS) as dem
             eintrag = gr.Dropdown(label="Eintrag öffnen", choices=[],
                                   interactive=True)
             vorschau = gr.Markdown()
-            datei = gr.File(label="Markdown-Datei")
+            datei = gr.File(label="Markdown-Datei", visible=False)
 
     start.click(analysieren, [audio, num_speakers], [ergebnis, status]) \
          .then(verlauf_laden, None, [verlauf_html, eintrag])
