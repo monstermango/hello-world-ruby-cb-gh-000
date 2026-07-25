@@ -328,6 +328,7 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Sprecher-Analyse") as demo:
 
 demo.launch(
     pwa=True,
+    ssr_mode=False,
     auth=(os.environ["APP_USER"], os.environ["APP_PASS"]),
     auth_message="Bitte mit Benutzername und Passwort anmelden.",
 )
