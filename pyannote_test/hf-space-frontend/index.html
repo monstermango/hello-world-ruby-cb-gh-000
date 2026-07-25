@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sprecher-Analyse</title>
+<meta name="theme-color" content="#f5f5f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#101014" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Sprecher">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" type="image/png" href="icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <h1>Sprecher-Analyse</h1>
+  <button id="btn-key" class="icon-btn" title="Zugangsschlüssel ändern">⚙︎</button>
+</header>
+
+<main>
+  <!-- Analyse -->
+  <section id="view-analyse" class="view">
+    <div id="rec-area" class="card center">
+      <button id="btn-record" class="rec-btn" aria-label="Aufnahme starten">
+        <svg viewBox="0 0 24 24" width="34" height="34" fill="currentColor" aria-hidden="true">
+          <path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z"/>
+          <path d="M19 11a7 7 0 0 1-14 0H3a9 9 0 0 0 8 8.94V22h2v-2.06A9 9 0 0 0 21 11h-2Z"/>
+        </svg>
+      </button>
+      <div id="rec-status" class="dim">Zum Aufnehmen tippen</div>
+      <button id="btn-datei" class="ghost">Audiodatei wählen</button>
+      <input type="file" id="file-input" accept="audio/*" hidden>
+    </div>
+
+    <div id="audio-panel" class="card" hidden>
+      <div class="row">
+        <span id="audio-name" class="grow"></span>
+        <button id="btn-verwerfen" class="icon-btn" title="Verwerfen">✕</button>
+      </div>
+      <audio id="audio-preview" controls></audio>
+      <details>
+        <summary>Optionen</summary>
+        <label class="row opt">
+          <span class="grow">Anzahl Sprecher (0 = automatisch)</span>
+          <input id="num-speakers" type="number" min="0" max="8" value="0" inputmode="numeric">
+        </label>
+      </details>
+      <button id="btn-analyse" class="primary">Analysieren</button>
+    </div>
+
+    <div id="progress" class="card center" hidden>
+      <div class="spinner"></div>
+      <div id="progress-text" class="dim">Analysiere …</div>
+    </div>
+
+    <div id="ergebnis"></div>
+  </section>
+
+  <!-- Verlauf -->
+  <section id="view-verlauf" class="view" hidden>
+    <div id="verlauf-liste"></div>
+    <div id="eintrag-detail" hidden>
+      <button id="btn-zurueck" class="ghost">← Zurück zum Verlauf</button>
+      <div id="eintrag-inhalt" class="card md"></div>
+      <button id="btn-download" class="primary">Markdown herunterladen</button>
+    </div>
+  </section>
+</main>
+
+<nav class="tabbar">
+  <button data-view="analyse" class="tab active">
+    <span class="tab-icon">🎙️</span><span>Analyse</span>
+  </button>
+  <button data-view="verlauf" class="tab">
+    <span class="tab-icon">📋</span><span>Verlauf</span>
+  </button>
+</nav>
+
+<!-- Login -->
+<div id="login" class="overlay" hidden>
+  <div class="sheet">
+    <h2>Anmelden</h2>
+    <p class="dim">Bitte den Zugangsschlüssel der App eingeben.</p>
+    <input id="key-input" type="password" placeholder="Zugangsschlüssel"
+           autocomplete="current-password">
+    <button id="btn-login" class="primary">Weiter</button>
+    <div id="login-fehler" class="fehler"></div>
+  </div>
+</div>
+
+<div id="toast" hidden></div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

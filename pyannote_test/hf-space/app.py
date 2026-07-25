@@ -1,4 +1,10 @@
-"""Sprecher-Analyse: mobil-optimierte App (HF Space auf ZeroGPU)."""
+"""API-Backend der Sprecher-Analyse (HF Space auf ZeroGPU).
+
+Die eigentliche App (PWA) läuft als eigener Static Space und spricht die
+hier registrierten API-Endpunkte an. Jeder Endpunkt verlangt den
+Zugangsschlüssel (Secret APP_PASS); erst nach der Prüfung wird GPU-Zeit
+verbraucht.
+"""
 import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -14,7 +20,9 @@ from pyannote.core import Segment
 from transformers import pipeline as hf_pipeline
 
 HF_TOKEN = os.environ["HF_TOKEN"]
+APP_KEY = os.environ["APP_PASS"]
 DATEN_REPO = "Monstermango/diarization-results"
+FRONTEND = "https://monstermango-sprecher-analyse.static.hf.space"
 ZEITZONE = ZoneInfo("Europe/Berlin")
 
 api = HfApi(token=HF_TOKEN)
@@ -47,6 +55,10 @@ def _namen_farben(labels):
     namen = {lb: f"Sprecher {i + 1}" for i, lb in enumerate(sorted(labels))}
     farben = {lb: FARBEN[i % len(FARBEN)] for i, lb in enumerate(sorted(labels))}
     return namen, farben
+
+
+def _pruefe(key):
+    return bool(key) and key == APP_KEY
 
 
 @spaces.GPU(duration=120)
@@ -136,95 +148,6 @@ def _speichern(md_text, zeitpunkt):
     return pfad
 
 
-# ---------- Ergebnis-Darstellung ----------
-
-def _chip(text, farbe):
-    return (f'<span style="background:{farbe};color:#fff;border-radius:999px;'
-            f'padding:2px 10px;font-weight:600;font-size:.85rem;'
-            f'white-space:nowrap">{text}</span>')
-
-
-def _html(daten, zeitpunkt):
-    namen, farben = _namen_farben(daten["stats"])
-    gesamt = sum(st["dauer"] for st in daten["stats"].values()) or 1.0
-    dauer = daten["dauer"] or 1.0
-
-    kopf = (f'<div class="sa-meta">'
-            f'<span>🕒 {_zeit(daten["dauer"])} min</span>'
-            f'<span>👥 {len(namen)} Sprecher</span>'
-            f'<span>📅 {zeitpunkt:%d.%m.%Y %H:%M}</span></div>')
-
-    anteil_bloecke, legende = "", ""
-    for lb in sorted(namen, key=lambda x: daten["stats"][x]["dauer"], reverse=True):
-        st = daten["stats"][lb]
-        anteil = 100 * st["dauer"] / gesamt
-        anteil_bloecke += (f'<div style="width:{anteil:.1f}%;'
-                           f'background:{farben[lb]}"></div>')
-        legende += (f'<span class="sa-leg">{_chip(namen[lb], farben[lb])} '
-                    f'<span class="sa-dim">{anteil:.0f} % · '
-                    f'{_zeit(st["dauer"])} min</span></span>')
-    anteile = (f'<div class="sa-bar">{anteil_bloecke}</div>'
-               f'<div class="sa-legs">{legende}</div>')
-
-    lanes = ""
-    for lb in sorted(namen):
-        bloecke = ""
-        for s in daten["segmente"]:
-            if s["label"] != lb:
-                continue
-            links = 100 * s["start"] / dauer
-            breite = max(0.5, 100 * (s["ende"] - s["start"]) / dauer)
-            bloecke += (f'<div style="position:absolute;left:{links:.2f}%;'
-                        f'width:{breite:.2f}%;top:0;bottom:0;'
-                        f'background:{farben[lb]};border-radius:3px"></div>')
-        lanes += f'<div class="sa-lane">{bloecke}</div>'
-    zeitleiste = (f'<div class="sa-timeline">{lanes}'
-                  f'<div class="sa-ticks"><span>0:00</span>'
-                  f'<span>{_zeit(dauer)}</span></div></div>')
-
-    protokoll = '<h3 class="sa-h">Gespräch</h3>'
-    for s in daten["segmente"]:
-        if not s["text"]:
-            continue
-        protokoll += (
-            f'<div class="sa-msg">'
-            f'<div class="sa-rail" style="background:{farben[s["label"]]}"></div>'
-            f'<div class="sa-msg-body"><div class="sa-msg-head">'
-            f'{namen[s["label"]]} · {_zeit(s["start"])}–{_zeit(s["ende"])}</div>'
-            f'<div class="sa-bubble">{s["text"]}</div></div></div>')
-
-    hinweis = ""
-    if daten["overlaps"]:
-        stellen = ", ".join(f"{_zeit(o['start'])}–{_zeit(o['ende'])}"
-                            for o in daten["overlaps"])
-        hinweis = (f'<div class="sa-warn">⚠️ Gleichzeitiges Sprechen bei: '
-                   f'{stellen}</div>')
-
-    return (f'<div class="sa-result">{kopf}{anteile}{zeitleiste}'
-            f'{protokoll}{hinweis}</div>')
-
-
-# ---------- Gradio-Handler ----------
-
-def analysieren(audio, num_speakers):
-    if audio is None:
-        return ('<div class="sa-result">Bitte zuerst Audio aufnehmen '
-                'oder eine Datei hochladen.</div>'), ""
-    try:
-        daten = _analyse_gpu(audio, num_speakers)
-    except Exception as e:
-        return f'<div class="sa-result">❌ Fehler bei der Analyse: {e}</div>', ""
-    zeitpunkt = datetime.now(ZEITZONE)
-    md_text = _markdown(daten, os.path.basename(audio), zeitpunkt)
-    try:
-        pfad = _speichern(md_text, zeitpunkt)
-        status = (f"💾 Gespeichert: [`{pfad}`]"
-                  f"(https://huggingface.co/datasets/{DATEN_REPO})")
-    except Exception as e:
-        status = f"⚠️ Analyse ok, aber Speichern fehlgeschlagen: {e}"
-    return _html(daten, zeitpunkt), status
-
-
 def _frontmatter(text):
     if text.startswith("---"):
         try:
@@ -235,112 +158,81 @@ def _frontmatter(text):
     return {}, text
 
 
-def verlauf_laden():
+# ---------- API-Endpunkte ----------
+
+def analysieren_api(key, audio, num_speakers):
+    if not _pruefe(key):
+        return {"ok": False, "fehler": "Ungültiger Zugangsschlüssel."}
+    if not audio:
+        return {"ok": False, "fehler": "Kein Audio übermittelt."}
+    try:
+        daten = _analyse_gpu(audio, num_speakers)
+    except Exception as e:
+        return {"ok": False, "fehler": f"Analyse fehlgeschlagen: {e}"}
+    zeitpunkt = datetime.now(ZEITZONE)
+    md_text = _markdown(daten, os.path.basename(audio), zeitpunkt)
+    try:
+        pfad = _speichern(md_text, zeitpunkt)
+    except Exception:
+        pfad = None
+    namen, farben = _namen_farben(daten["stats"])
+    return {"ok": True, "daten": daten, "namen": namen, "farben": farben,
+            "zeitpunkt": zeitpunkt.isoformat(timespec="seconds"), "pfad": pfad}
+
+
+def verlauf_api(key):
+    if not _pruefe(key):
+        return {"ok": False, "fehler": "Ungültiger Zugangsschlüssel."}
+    eintraege = []
     dateien = sorted(
         (f for f in api.list_repo_files(DATEN_REPO, repo_type="dataset")
          if f.startswith("aufnahmen/") and f.endswith(".md")), reverse=True)[:20]
-    karten, auswahl = "", []
     for f in dateien:
         lokal = hf_hub_download(DATEN_REPO, f, repo_type="dataset", token=HF_TOKEN)
         with open(lokal, encoding="utf-8") as fh:
             fm, _ = _frontmatter(fh.read())
-        titel = fm.get("titel", f)
-        karten += (f'<div class="sa-card"><div class="sa-card-title">{titel}</div>'
-                   f'<div class="sa-card-meta">'
-                   f'<span>👥 {fm.get("sprecher", "?")} Sprecher</span>'
-                   f'<span>🕒 {_zeit(fm.get("dauer_s", 0))} min</span></div></div>')
-        auswahl.append((f"{titel}", f))
-    if not karten:
-        karten = '<div class="sa-card">Noch keine Aufzeichnungen.</div>'
-    return karten, gr.update(choices=auswahl, value=None)
+        eintraege.append({"pfad": f,
+                          "titel": fm.get("titel", f),
+                          "datum": str(fm.get("datum", "")),
+                          "sprecher": fm.get("sprecher"),
+                          "dauer_s": fm.get("dauer_s")})
+    return {"ok": True, "eintraege": eintraege}
 
 
-def eintrag_anzeigen(pfad):
-    if not pfad:
-        return "", gr.update(value=None, visible=False)
+def eintrag_api(key, pfad):
+    if not _pruefe(key):
+        return {"ok": False, "fehler": "Ungültiger Zugangsschlüssel."}
+    if not (isinstance(pfad, str) and pfad.startswith("aufnahmen/")
+            and pfad.endswith(".md") and ".." not in pfad):
+        return {"ok": False, "fehler": "Ungültiger Pfad."}
     lokal = hf_hub_download(DATEN_REPO, pfad, repo_type="dataset", token=HF_TOKEN)
     with open(lokal, encoding="utf-8") as fh:
         text = fh.read()
     fm, body = _frontmatter(text)
-    vorschau = (f"```yaml\n{yaml.safe_dump(fm, allow_unicode=True, sort_keys=False).strip()}\n```\n"
-                + body)
-    return vorschau, gr.update(value=lokal, visible=True)
+    return {"ok": True, "frontmatter": fm, "body": body, "markdown": text}
 
 
-CSS = """
-footer {display: none !important}
-.gradio-container {max-width: 680px !important; margin: 0 auto !important;
-  padding: clamp(8px, 3vw, 24px) !important;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-    "Helvetica Neue", sans-serif !important}
-.gradio-container h1 {font-size: clamp(1.3rem, 5vw, 1.8rem); margin: 4px 0 12px 0}
-button.primary {width: 100%; min-height: 52px; font-size: 1.05rem;
-  border-radius: 14px}
-.tab-nav button {min-height: 44px; font-size: 1rem}
+with gr.Blocks(title="Sprecher-Analyse API") as demo:
+    gr.Markdown(f"# 🎙️ Sprecher-Analyse — API-Backend\n"
+                f"Die App selbst läuft unter **[{FRONTEND}]({FRONTEND})**. "
+                f"Dieses Formular dient nur zu Testzwecken.")
+    key = gr.Textbox(label="Zugangsschlüssel", type="password")
+    with gr.Tab("Analyse"):
+        audio = gr.Audio(sources=["upload", "microphone"], type="filepath",
+                         label="Audio")
+        num_speakers = gr.Number(value=0, precision=0,
+                                 label="Anzahl Sprecher (0 = automatisch)")
+        b_analyse = gr.Button("Analysieren", variant="primary")
+        out_analyse = gr.JSON()
+        b_analyse.click(analysieren_api, [key, audio, num_speakers],
+                        out_analyse, api_name="analysieren")
+    with gr.Tab("Verlauf"):
+        b_verlauf = gr.Button("Verlauf laden")
+        out_verlauf = gr.JSON()
+        b_verlauf.click(verlauf_api, [key], out_verlauf, api_name="verlauf")
+        pfad = gr.Textbox(label="Pfad (aufnahmen/....md)")
+        b_eintrag = gr.Button("Eintrag laden")
+        out_eintrag = gr.JSON()
+        b_eintrag.click(eintrag_api, [key, pfad], out_eintrag, api_name="eintrag")
 
-.sa-result {font-size: 1rem; line-height: 1.5; overflow-wrap: anywhere}
-.sa-meta {display: flex; gap: 14px; flex-wrap: wrap; opacity: .75;
-  font-size: .9rem; margin: 4px 0 14px 0}
-.sa-bar {display: flex; height: 16px; border-radius: 999px; overflow: hidden;
-  margin: 4px 0 10px 0}
-.sa-legs {line-height: 2.2}
-.sa-leg {margin-right: 14px; white-space: nowrap}
-.sa-dim {font-size: .85rem; opacity: .75}
-.sa-timeline {margin: 18px 0 6px 0}
-.sa-lane {position: relative; height: 14px; margin: 4px 0;
-  background: rgba(128,128,128,.12); border-radius: 3px}
-.sa-ticks {display: flex; justify-content: space-between; font-size: .75rem;
-  opacity: .6}
-.sa-h {margin: 22px 0 6px 0; font-size: 1.1rem}
-.sa-msg {display: flex; gap: 10px; margin: 12px 0}
-.sa-rail {flex: 0 0 4px; border-radius: 2px}
-.sa-msg-body {min-width: 0; flex: 1}
-.sa-msg-head {font-size: .78rem; opacity: .65; margin-bottom: 3px}
-.sa-bubble {background: rgba(128,128,128,.1); padding: 10px 14px;
-  border-radius: 12px; overflow-wrap: anywhere}
-.sa-warn {margin-top: 16px; padding: 10px 14px; border-radius: 10px;
-  background: rgba(240,173,78,.15); font-size: .9rem}
-
-.sa-card {padding: 12px 14px; border-radius: 12px;
-  background: rgba(128,128,128,.08); margin: 8px 0}
-.sa-card-title {font-weight: 600}
-.sa-card-meta {font-size: .85rem; opacity: .7; margin-top: 2px;
-  display: flex; gap: 14px; flex-wrap: wrap}
-
-@media (max-width: 640px) {
-  .gradio-container {padding: 8px !important}
-  .block {padding: 8px !important}
-}
-"""
-
-with gr.Blocks(theme=gr.themes.Soft(), title="Sprecher-Analyse", css=CSS) as demo:
-    gr.Markdown("# 🎙️ Sprecher-Analyse")
-    with gr.Tabs():
-        with gr.Tab("Analyse"):
-            audio = gr.Audio(sources=["microphone", "upload"],
-                             type="filepath", label="Audio")
-            with gr.Accordion("Optionen", open=False):
-                num_speakers = gr.Number(
-                    value=0, precision=0,
-                    label="Anzahl Sprecher (0 = automatisch)")
-            start = gr.Button("Analysieren", variant="primary")
-            status = gr.Markdown()
-            ergebnis = gr.HTML()
-        with gr.Tab("Verlauf"):
-            verlauf_html = gr.HTML()
-            eintrag = gr.Dropdown(label="Eintrag öffnen", choices=[],
-                                  interactive=True)
-            vorschau = gr.Markdown()
-            datei = gr.File(label="Markdown-Datei", visible=False)
-
-    start.click(analysieren, [audio, num_speakers], [ergebnis, status]) \
-         .then(verlauf_laden, None, [verlauf_html, eintrag])
-    eintrag.change(eintrag_anzeigen, [eintrag], [vorschau, datei])
-    demo.load(verlauf_laden, None, [verlauf_html, eintrag])
-
-demo.launch(
-    pwa=True,
-    ssr_mode=False,
-    auth=(os.environ["APP_USER"], os.environ["APP_PASS"]),
-    auth_message="Bitte mit Benutzername und Passwort anmelden.",
-)
+demo.launch(ssr_mode=False)
