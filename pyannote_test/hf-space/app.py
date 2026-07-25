@@ -1,4 +1,4 @@
-"""Sprecher-Analyse: ein Ablauf, vollständiges Ergebnis (HF Space auf ZeroGPU)."""
+"""Sprecher-Analyse: mobil-optimierte App (HF Space auf ZeroGPU)."""
 import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -139,8 +139,8 @@ def _speichern(md_text, zeitpunkt):
 # ---------- Ergebnis-Darstellung ----------
 
 def _chip(text, farbe):
-    return (f'<span style="background:{farbe};color:#fff;border-radius:12px;'
-            f'padding:2px 10px;font-weight:600;font-size:.85em;'
+    return (f'<span style="background:{farbe};color:#fff;border-radius:999px;'
+            f'padding:2px 10px;font-weight:600;font-size:.85rem;'
             f'white-space:nowrap">{text}</span>')
 
 
@@ -149,8 +149,7 @@ def _html(daten, zeitpunkt):
     gesamt = sum(st["dauer"] for st in daten["stats"].values()) or 1.0
     dauer = daten["dauer"] or 1.0
 
-    kopf = (f'<div style="display:flex;gap:16px;flex-wrap:wrap;opacity:.8;'
-            f'font-size:.9em;margin-bottom:12px">'
+    kopf = (f'<div class="sa-meta">'
             f'<span>🕒 {_zeit(daten["dauer"])} min</span>'
             f'<span>👥 {len(namen)} Sprecher</span>'
             f'<span>📅 {zeitpunkt:%d.%m.%Y %H:%M}</span></div>')
@@ -160,14 +159,12 @@ def _html(daten, zeitpunkt):
         st = daten["stats"][lb]
         anteil = 100 * st["dauer"] / gesamt
         anteil_bloecke += (f'<div style="width:{anteil:.1f}%;'
-                           f'background:{farben[lb]}" title="{namen[lb]}"></div>')
-        legende += (f'<span style="margin-right:12px;white-space:nowrap">'
-                    f'{_chip(namen[lb], farben[lb])} '
-                    f'<span style="font-size:.85em;opacity:.8">{anteil:.0f} % '
-                    f'· {_zeit(st["dauer"])} min</span></span>')
-    anteile = (f'<div style="display:flex;height:16px;border-radius:8px;'
-               f'overflow:hidden;margin:4px 0 8px 0">{anteil_bloecke}</div>'
-               f'<div style="line-height:2">{legende}</div>')
+                           f'background:{farben[lb]}"></div>')
+        legende += (f'<span class="sa-leg">{_chip(namen[lb], farben[lb])} '
+                    f'<span class="sa-dim">{anteil:.0f} % · '
+                    f'{_zeit(st["dauer"])} min</span></span>')
+    anteile = (f'<div class="sa-bar">{anteil_bloecke}</div>'
+               f'<div class="sa-legs">{legende}</div>')
 
     lanes = ""
     for lb in sorted(namen):
@@ -180,49 +177,43 @@ def _html(daten, zeitpunkt):
             bloecke += (f'<div style="position:absolute;left:{links:.2f}%;'
                         f'width:{breite:.2f}%;top:0;bottom:0;'
                         f'background:{farben[lb]};border-radius:3px"></div>')
-        lanes += (f'<div style="position:relative;height:14px;margin:3px 0;'
-                  f'background:rgba(128,128,128,.12);border-radius:3px">'
-                  f'{bloecke}</div>')
-    zeitleiste = (f'<div style="margin:16px 0 4px 0">{lanes}'
-                  f'<div style="display:flex;justify-content:space-between;'
-                  f'font-size:.75em;opacity:.6"><span>0:00</span>'
+        lanes += f'<div class="sa-lane">{bloecke}</div>'
+    zeitleiste = (f'<div class="sa-timeline">{lanes}'
+                  f'<div class="sa-ticks"><span>0:00</span>'
                   f'<span>{_zeit(dauer)}</span></div></div>')
 
-    protokoll = '<h3 style="margin:20px 0 8px 0">Gespräch</h3>'
+    protokoll = '<h3 class="sa-h">Gespräch</h3>'
     for s in daten["segmente"]:
         if not s["text"]:
             continue
         protokoll += (
-            f'<div style="display:flex;gap:10px;margin:10px 0">'
-            f'<div style="flex:0 0 4px;border-radius:2px;'
-            f'background:{farben[s["label"]]}"></div>'
-            f'<div style="min-width:0"><div style="font-size:.78em;opacity:.65;'
-            f'margin-bottom:2px">{namen[s["label"]]} · '
-            f'{_zeit(s["start"])}–{_zeit(s["ende"])}</div>'
-            f'<div style="background:rgba(128,128,128,.1);padding:8px 12px;'
-            f'border-radius:10px">{s["text"]}</div></div></div>')
+            f'<div class="sa-msg">'
+            f'<div class="sa-rail" style="background:{farben[s["label"]]}"></div>'
+            f'<div class="sa-msg-body"><div class="sa-msg-head">'
+            f'{namen[s["label"]]} · {_zeit(s["start"])}–{_zeit(s["ende"])}</div>'
+            f'<div class="sa-bubble">{s["text"]}</div></div></div>')
 
     hinweis = ""
     if daten["overlaps"]:
         stellen = ", ".join(f"{_zeit(o['start'])}–{_zeit(o['ende'])}"
                             for o in daten["overlaps"])
-        hinweis = (f'<div style="margin-top:14px;padding:8px 12px;'
-                   f'border-radius:8px;background:rgba(240,173,78,.15);'
-                   f'font-size:.85em">⚠️ Gleichzeitiges Sprechen bei: '
+        hinweis = (f'<div class="sa-warn">⚠️ Gleichzeitiges Sprechen bei: '
                    f'{stellen}</div>')
 
-    return kopf + anteile + zeitleiste + protokoll + hinweis
+    return (f'<div class="sa-result">{kopf}{anteile}{zeitleiste}'
+            f'{protokoll}{hinweis}</div>')
 
 
 # ---------- Gradio-Handler ----------
 
 def analysieren(audio, num_speakers):
     if audio is None:
-        return "<p>Bitte zuerst Audio aufnehmen oder eine Datei hochladen.</p>", ""
+        return ('<div class="sa-result">Bitte zuerst Audio aufnehmen '
+                'oder eine Datei hochladen.</div>'), ""
     try:
         daten = _analyse_gpu(audio, num_speakers)
     except Exception as e:
-        return f"<p>❌ Fehler bei der Analyse: {e}</p>", ""
+        return f'<div class="sa-result">❌ Fehler bei der Analyse: {e}</div>', ""
     zeitpunkt = datetime.now(ZEITZONE)
     md_text = _markdown(daten, os.path.basename(audio), zeitpunkt)
     try:
@@ -244,30 +235,31 @@ def _frontmatter(text):
     return {}, text
 
 
-def dashboard_laden():
+def verlauf_laden():
     dateien = sorted(
         (f for f in api.list_repo_files(DATEN_REPO, repo_type="dataset")
          if f.startswith("aufnahmen/") and f.endswith(".md")), reverse=True)[:20]
-    zeilen, pfade = [], []
+    karten, auswahl = "", []
     for f in dateien:
         lokal = hf_hub_download(DATEN_REPO, f, repo_type="dataset", token=HF_TOKEN)
         with open(lokal, encoding="utf-8") as fh:
             fm, _ = _frontmatter(fh.read())
         datum = str(fm.get("datum", ""))[:16].replace("T", " ")
-        zeilen.append([datum, fm.get("titel", f), fm.get("sprecher", "?"),
-                       _zeit(fm.get("dauer_s", 0))])
-        pfade.append(f)
-    if not zeilen:
-        zeilen = [["–", "Noch keine Aufzeichnungen", "", ""]]
-    return zeilen, pfade
+        titel = fm.get("titel", f)
+        karten += (f'<div class="sa-card"><div class="sa-card-title">{titel}</div>'
+                   f'<div class="sa-card-meta">📅 {datum} &nbsp; '
+                   f'👥 {fm.get("sprecher", "?")} &nbsp; '
+                   f'🕒 {_zeit(fm.get("dauer_s", 0))} min</div></div>')
+        auswahl.append((f"{titel}", f))
+    if not karten:
+        karten = '<div class="sa-card">Noch keine Aufzeichnungen.</div>'
+    return karten, gr.update(choices=auswahl, value=None)
 
 
-def eintrag_anzeigen(pfade, evt: gr.SelectData):
-    idx = evt.index[0]
-    if not pfade or idx >= len(pfade):
-        return "*Kein Eintrag ausgewählt.*", None
-    lokal = hf_hub_download(DATEN_REPO, pfade[idx], repo_type="dataset",
-                            token=HF_TOKEN)
+def eintrag_anzeigen(pfad):
+    if not pfad:
+        return "", None
+    lokal = hf_hub_download(DATEN_REPO, pfad, repo_type="dataset", token=HF_TOKEN)
     with open(lokal, encoding="utf-8") as fh:
         text = fh.read()
     fm, body = _frontmatter(text)
@@ -278,7 +270,47 @@ def eintrag_anzeigen(pfade, evt: gr.SelectData):
 
 CSS = """
 footer {display: none !important}
-.gradio-container {max-width: 760px !important; margin: 0 auto !important}
+.gradio-container {max-width: 680px !important; margin: 0 auto !important;
+  padding: clamp(8px, 3vw, 24px) !important;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", sans-serif !important}
+.gradio-container h1 {font-size: clamp(1.3rem, 5vw, 1.8rem); margin: 4px 0 12px 0}
+button.primary {width: 100%; min-height: 52px; font-size: 1.05rem;
+  border-radius: 14px}
+.tab-nav button {min-height: 44px; font-size: 1rem}
+
+.sa-result {font-size: 1rem; line-height: 1.5; overflow-wrap: anywhere}
+.sa-meta {display: flex; gap: 14px; flex-wrap: wrap; opacity: .75;
+  font-size: .9rem; margin: 4px 0 14px 0}
+.sa-bar {display: flex; height: 16px; border-radius: 999px; overflow: hidden;
+  margin: 4px 0 10px 0}
+.sa-legs {line-height: 2.2}
+.sa-leg {margin-right: 14px; white-space: nowrap}
+.sa-dim {font-size: .85rem; opacity: .75}
+.sa-timeline {margin: 18px 0 6px 0}
+.sa-lane {position: relative; height: 14px; margin: 4px 0;
+  background: rgba(128,128,128,.12); border-radius: 3px}
+.sa-ticks {display: flex; justify-content: space-between; font-size: .75rem;
+  opacity: .6}
+.sa-h {margin: 22px 0 6px 0; font-size: 1.1rem}
+.sa-msg {display: flex; gap: 10px; margin: 12px 0}
+.sa-rail {flex: 0 0 4px; border-radius: 2px}
+.sa-msg-body {min-width: 0; flex: 1}
+.sa-msg-head {font-size: .78rem; opacity: .65; margin-bottom: 3px}
+.sa-bubble {background: rgba(128,128,128,.1); padding: 10px 14px;
+  border-radius: 12px; overflow-wrap: anywhere}
+.sa-warn {margin-top: 16px; padding: 10px 14px; border-radius: 10px;
+  background: rgba(240,173,78,.15); font-size: .9rem}
+
+.sa-card {padding: 12px 14px; border-radius: 12px;
+  background: rgba(128,128,128,.08); margin: 8px 0}
+.sa-card-title {font-weight: 600}
+.sa-card-meta {font-size: .85rem; opacity: .7; margin-top: 2px}
+
+@media (max-width: 640px) {
+  .gradio-container {padding: 8px !important}
+  .block {padding: 8px !important}
+}
 """
 
 with gr.Blocks(theme=gr.themes.Soft(), title="Sprecher-Analyse", css=CSS) as demo:
@@ -291,22 +323,20 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Sprecher-Analyse", css=CSS) as dem
                 num_speakers = gr.Number(
                     value=0, precision=0,
                     label="Anzahl Sprecher (0 = automatisch)")
-            start = gr.Button("Analysieren", variant="primary", size="lg")
+            start = gr.Button("Analysieren", variant="primary")
             status = gr.Markdown()
             ergebnis = gr.HTML()
-        with gr.Tab("📋 Verlauf"):
-            aktualisieren = gr.Button("🔄 Aktualisieren", size="sm")
-            tabelle = gr.Dataframe(
-                headers=["Datum", "Titel", "Sprecher", "Dauer"],
-                interactive=False, wrap=True)
-            pfade_state = gr.State([])
-            vorschau = gr.Markdown("*Zeile antippen für die Vorschau.*")
+        with gr.Tab("Verlauf"):
+            verlauf_html = gr.HTML()
+            eintrag = gr.Dropdown(label="Eintrag öffnen", choices=[],
+                                  interactive=True)
+            vorschau = gr.Markdown()
             datei = gr.File(label="Markdown-Datei")
 
-    start.click(analysieren, [audio, num_speakers], [ergebnis, status])
-    aktualisieren.click(dashboard_laden, None, [tabelle, pfade_state])
-    tabelle.select(eintrag_anzeigen, [pfade_state], [vorschau, datei])
-    demo.load(dashboard_laden, None, [tabelle, pfade_state])
+    start.click(analysieren, [audio, num_speakers], [ergebnis, status]) \
+         .then(verlauf_laden, None, [verlauf_html, eintrag])
+    eintrag.change(eintrag_anzeigen, [eintrag], [vorschau, datei])
+    demo.load(verlauf_laden, None, [verlauf_html, eintrag])
 
 demo.launch(
     pwa=True,
