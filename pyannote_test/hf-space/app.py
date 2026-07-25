@@ -326,4 +326,8 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Sprecher-Analyse") as demo:
     tabelle.select(eintrag_anzeigen, [pfade_state], [vorschau, datei])
     demo.load(dashboard_laden, None, [tabelle, pfade_state])
 
-demo.launch(pwa=True)
+demo.launch(
+    pwa=True,
+    auth=(os.environ["APP_USER"], os.environ["APP_PASS"]),
+    auth_message="Bitte mit Benutzername und Passwort anmelden.",
+)
