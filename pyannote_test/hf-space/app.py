@@ -63,7 +63,16 @@ def _pruefe(key):
     return bool(key) and key == APP_KEY
 
 
-@spaces.GPU(duration=120)
+def _gpu_dauer(audio_path, num_speakers):
+    """Reserviert GPU-Zeit passend zur Audiolänge statt pauschal zu viel."""
+    try:
+        laenge = loader.get_duration(audio_path)
+    except Exception:
+        laenge = 600
+    return int(min(120, max(30, 15 + laenge / 6)))
+
+
+@spaces.GPU(duration=_gpu_dauer)
 def _analyse_gpu(audio_path, num_speakers):
     kwargs = {}
     if num_speakers and int(num_speakers) > 0:
