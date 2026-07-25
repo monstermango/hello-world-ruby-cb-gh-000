@@ -6,6 +6,14 @@ let schluessel = localStorage.getItem("sa_key") || "";
 let hfToken = localStorage.getItem("sa_hf") || "";
 let audioDatei = null;
 let letztesMarkdown = null;
+let letzteAnalyse = null;
+
+const SPRACHEN = {
+  german: "Deutsch", english: "Englisch", french: "Französisch",
+  spanish: "Spanisch", italian: "Italienisch", turkish: "Türkisch",
+  russian: "Russisch", arabic: "Arabisch", dutch: "Niederländisch",
+  polish: "Polnisch", portuguese: "Portugiesisch", ukrainian: "Ukrainisch",
+};
 let recorder = null;
 let recChunks = [];
 let recTimer = null;
@@ -152,8 +160,8 @@ $("#btn-analyse").addEventListener("click", async () => {
     const n = parseInt($("#num-speakers").value, 10) || 0;
     const d = await rufe("/analysieren", [schluessel, audioDatei, n]);
     if (!d.ok) throw new Error(d.fehler);
-    ergebnisAnzeigen(d);
-    if (d.pfad) toast("Als Markdown gespeichert");
+    letzteAnalyse = d;
+    ergebnisAnzeigen(d, false);
   } catch (e) {
     toast("Fehler: " + e.message);
   } finally {
@@ -162,7 +170,7 @@ $("#btn-analyse").addEventListener("click", async () => {
   }
 });
 
-function ergebnisAnzeigen(d) {
+function ergebnisAnzeigen(d, gespeichert) {
   const { daten, namen, farben } = d;
   const labels = Object.keys(namen).sort();
   const gesamt = labels.reduce((a, lb) => a + daten.stats[lb].dauer, 0) || 1;
@@ -171,9 +179,12 @@ function ergebnisAnzeigen(d) {
   const chip = (lb) =>
     `<span class="chip" style="background:${farben[lb]}">${esc(namen[lb])}</span>`;
 
+  const spracheRoh = d.sprache || daten.sprache;
+  const sprache = spracheRoh
+    ? `<span>🌐 ${esc(SPRACHEN[spracheRoh] || spracheRoh)}</span>` : "";
   const meta =
     `<div class="sa-meta"><span>🕒 ${zeit(daten.dauer)} min</span>` +
-    `<span>👥 ${labels.length} Sprecher</span>` +
+    `<span>👥 ${labels.length} Sprecher</span>${sprache}` +
     `<span>📅 ${wann.toLocaleString("de-DE", { dateStyle: "short", timeStyle: "short" })}</span></div>`;
 
   const sortiert = [...labels].sort(
@@ -218,33 +229,76 @@ function ergebnisAnzeigen(d) {
     hinweis = `<div class="sa-warn">⚠️ Gleichzeitiges Sprechen bei: ${stellen}</div>`;
   }
 
+  let abschluss;
+  if (gespeichert) {
+    abschluss =
+      `<div class="row md-aktionen">` +
+      `<button id="btn-md-teilen" class="ghost grow">Teilen</button>` +
+      `<button id="btn-md-laden" class="ghost grow">Herunterladen</button>` +
+      `</div>`;
+  } else {
+    let felder = "";
+    for (const lb of labels) {
+      felder +=
+        `<label class="row namen-zeile">` +
+        `<span class="punkt" style="background:${farben[lb]}"></span>` +
+        `<input class="namen-feld" data-label="${esc(lb)}" type="text" ` +
+        `placeholder="${esc(namen[lb])}" autocomplete="off"></label>`;
+    }
+    abschluss =
+      `<div class="sa-h">Sprecher benennen</div>` +
+      `<div class="dim">Optional — leere Felder behalten den Standardnamen.</div>` +
+      felder +
+      `<button id="btn-speichern" class="primary">Als Markdown speichern</button>`;
+  }
+
   $("#ergebnis").innerHTML =
     `<div class="card">${meta}<div class="sa-bar">${balken}</div>` +
     `<div class="sa-legs">${legende}</div>${zeitleiste}${gespraech}${hinweis}` +
-    `<div class="row md-aktionen">` +
-    `<button id="btn-md-teilen" class="ghost grow">Teilen</button>` +
-    `<button id="btn-md-laden" class="ghost grow">Herunterladen</button>` +
-    `</div></div>`;
+    `${abschluss}</div>`;
 
-  const name = (d.pfad || "analyse.md").split("/").pop();
-  letztesMarkdown = { text: d.markdown || "", name };
-  $("#btn-md-laden").addEventListener("click", () => mdHerunterladen());
-  const teilen = $("#btn-md-teilen");
-  if (navigator.share) {
-    teilen.addEventListener("click", async () => {
-      const datei = new File([letztesMarkdown.text], letztesMarkdown.name,
-                             { type: "text/markdown" });
-      try {
-        if (navigator.canShare && navigator.canShare({ files: [datei] })) {
-          await navigator.share({ files: [datei], title: letztesMarkdown.name });
-        } else {
-          await navigator.share({ title: letztesMarkdown.name,
-                                  text: letztesMarkdown.text });
-        }
-      } catch (e) { /* Abbruch durch Nutzer */ }
-    });
+  if (gespeichert) {
+    $("#btn-md-laden").addEventListener("click", () => mdHerunterladen());
+    const teilen = $("#btn-md-teilen");
+    if (navigator.share) {
+      teilen.addEventListener("click", async () => {
+        const datei = new File([letztesMarkdown.text], letztesMarkdown.name,
+                               { type: "text/markdown" });
+        try {
+          if (navigator.canShare && navigator.canShare({ files: [datei] })) {
+            await navigator.share({ files: [datei], title: letztesMarkdown.name });
+          } else {
+            await navigator.share({ title: letztesMarkdown.name,
+                                    text: letztesMarkdown.text });
+          }
+        } catch (e) { /* Abbruch durch Nutzer */ }
+      });
+    } else {
+      teilen.hidden = true;
+    }
   } else {
-    teilen.hidden = true;
+    $("#btn-speichern").addEventListener("click", speichern);
+  }
+}
+
+async function speichern() {
+  if (!letzteAnalyse) return;
+  const eigene = {};
+  document.querySelectorAll(".namen-feld").forEach((f) => {
+    if (f.value.trim()) eigene[f.dataset.label] = f.value.trim();
+  });
+  $("#btn-speichern").disabled = true;
+  try {
+    const d = await rufe("/speichern", [schluessel, letzteAnalyse, eigene]);
+    if (!d.ok) throw new Error(d.fehler);
+    letztesMarkdown = { text: d.markdown, name: d.pfad.split("/").pop() };
+    letzteAnalyse.namen = { ...letzteAnalyse.namen, ...eigene };
+    ergebnisAnzeigen(letzteAnalyse, true);
+    toast("Als Markdown gespeichert");
+  } catch (e) {
+    toast("Speichern: " + e.message);
+    const btn = $("#btn-speichern");
+    if (btn) btn.disabled = false;
   }
 }
 

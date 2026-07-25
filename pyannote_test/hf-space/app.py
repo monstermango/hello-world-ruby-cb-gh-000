@@ -71,15 +71,41 @@ def _analyse_gpu(audio_path, num_speakers):
     output = diarizer(audio_path, **kwargs)
     dia = getattr(output, "speaker_diarization", output)
 
+    # Die ganze Aufnahme in einem Stück transkribieren: voller Kontext liefert
+    # deutlich bessere Texte als Einzelsegmente; die Sprache erkennt Whisper
+    # dabei automatisch.
+    transkript = asr(audio_path, return_timestamps=True, return_language=True)
+    chunks = []
+    for c in transkript.get("chunks", []):
+        start, ende = c.get("timestamp") or (None, None)
+        if start is None or not c.get("text", "").strip():
+            continue
+        chunks.append({"start": float(start),
+                       "ende": float(ende if ende is not None else start + 30.0),
+                       "text": c["text"].strip(),
+                       "sprache": c.get("language")})
+    sprache = next((c["sprache"] for c in chunks if c.get("sprache")), None)
+
+    turns = [(turn, lb) for turn, _, lb in dia.itertracks(yield_label=True)]
+    texte = [[] for _ in turns]
+    for c in chunks:
+        mitte = (c["start"] + c["ende"]) / 2
+        best, best_wert = None, None
+        for i, (turn, _) in enumerate(turns):
+            ueberlappung = max(0.0, min(c["ende"], turn.end)
+                               - max(c["start"], turn.start))
+            abstand = abs(mitte - (turn.start + turn.end) / 2)
+            wert = (-ueberlappung, abstand)
+            if best_wert is None or wert < best_wert:
+                best, best_wert = i, wert
+        if best is not None:
+            texte[best].append(c["text"])
+
     segmente = []
-    for turn, _, lb in dia.itertracks(yield_label=True):
-        text = None
-        if turn.duration >= 0.3:
-            wellenform, sr = loader.crop(audio_path, Segment(turn.start, turn.end))
-            text = asr({"array": wellenform.squeeze(0).numpy(),
-                        "sampling_rate": sr})["text"].strip()
+    for i, (turn, lb) in enumerate(turns):
         segmente.append({"start": round(turn.start, 2),
-                         "ende": round(turn.end, 2), "label": lb, "text": text})
+                         "ende": round(turn.end, 2), "label": lb,
+                         "text": " ".join(texte[i]) or None})
 
     stats = {lb: {"dauer": round(dia.label_duration(lb), 1),
                   "turns": len(dia.label_timeline(lb))}
@@ -92,18 +118,21 @@ def _analyse_gpu(audio_path, num_speakers):
                          "ende": round(seg.end, 2), "wer": wer})
 
     return {"dauer": round(loader.get_duration(audio_path), 1),
-            "segmente": segmente, "stats": stats, "overlaps": overlaps}
+            "segmente": segmente, "stats": stats, "overlaps": overlaps,
+            "sprache": sprache}
 
 
 # ---------- Markdown-Ablage ----------
 
-def _markdown(daten, quelle, zeitpunkt):
-    namen, _ = _namen_farben(daten["stats"])
+def _markdown(daten, quelle, zeitpunkt, namen=None):
+    std_namen, _ = _namen_farben(daten["stats"])
+    namen = {**std_namen, **(namen or {})}
     frontmatter = {
         "titel": f"Aufnahme {zeitpunkt:%Y-%m-%d %H:%M}",
         "datum": zeitpunkt.isoformat(timespec="seconds"),
         "dauer_s": daten["dauer"],
         "sprecher": len(daten["stats"]),
+        "sprache": daten.get("sprache"),
         "quelle": quelle,
         "redeanteile_s": {namen[lb]: st["dauer"]
                           for lb, st in daten["stats"].items()},
@@ -185,15 +214,30 @@ def analysieren_api(key, audio, num_speakers):
     except Exception as e:
         return {"ok": False, "fehler": f"Analyse fehlgeschlagen: {e}"}
     zeitpunkt = datetime.now(ZEITZONE)
-    md_text = _markdown(daten, quelle, zeitpunkt)
-    try:
-        pfad = _speichern(md_text, zeitpunkt)
-    except Exception:
-        pfad = None
     namen, farben = _namen_farben(daten["stats"])
     return {"ok": True, "daten": daten, "namen": namen, "farben": farben,
-            "zeitpunkt": zeitpunkt.isoformat(timespec="seconds"), "pfad": pfad,
-            "markdown": md_text}
+            "zeitpunkt": zeitpunkt.isoformat(timespec="seconds"),
+            "quelle": quelle, "sprache": daten.get("sprache")}
+
+
+def speichern_api(key, analyse, namen):
+    if not _pruefe(key):
+        return {"ok": False, "fehler": "Ungültiger Zugangsschlüssel."}
+    try:
+        daten = analyse["daten"]
+        zeitpunkt = datetime.fromisoformat(analyse["zeitpunkt"])
+        quelle = analyse.get("quelle") or "aufnahme"
+        daten["stats"]
+    except (KeyError, TypeError, ValueError):
+        return {"ok": False, "fehler": "Ungültige Analysedaten."}
+    eigene = {k: v.strip() for k, v in (namen or {}).items()
+              if isinstance(v, str) and v.strip()}
+    md_text = _markdown(daten, quelle, zeitpunkt, eigene)
+    try:
+        pfad = _speichern(md_text, zeitpunkt)
+    except Exception as e:
+        return {"ok": False, "fehler": f"Speichern fehlgeschlagen: {e}"}
+    return {"ok": True, "pfad": pfad, "markdown": md_text}
 
 
 def verlauf_api(key):
@@ -242,6 +286,12 @@ with gr.Blocks(title="Sprecher-Analyse API") as demo:
         out_analyse = gr.JSON()
         b_analyse.click(analysieren_api, [key, audio, num_speakers],
                         out_analyse, api_name="analysieren")
+        analyse_json = gr.JSON(label="Analyse-Objekt (aus /analysieren)")
+        namen_json = gr.JSON(label='Sprechernamen, z. B. {"SPEAKER_00": "Nils"}')
+        b_speichern = gr.Button("Als Markdown speichern")
+        out_speichern = gr.JSON()
+        b_speichern.click(speichern_api, [key, analyse_json, namen_json],
+                          out_speichern, api_name="speichern")
     with gr.Tab("Verlauf"):
         b_verlauf = gr.Button("Verlauf laden")
         out_verlauf = gr.JSON()

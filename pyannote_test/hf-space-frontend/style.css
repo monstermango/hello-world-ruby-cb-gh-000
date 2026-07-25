@@ -120,6 +120,11 @@ summary { min-height: 44px; display: flex; align-items: center; color: var(--dim
 .sa-warn { margin-top: 14px; padding: 10px 14px; border-radius: 10px;
   background: var(--warn-bg); font-size: .9rem }
 .md-aktionen { margin-top: 16px }
+.namen-zeile { margin: 10px 0 }
+.punkt { width: 14px; height: 14px; border-radius: 50%; flex: 0 0 14px }
+.namen-feld { flex: 1; min-height: 44px; padding: 0 12px; font-size: 16px;
+  font-family: inherit; border: 1px solid var(--linie); border-radius: 10px;
+  background: var(--bg); color: var(--text) }
 
 /* Verlauf */
 .v-card { width: 100%; text-align: left; background: var(--fläche);
