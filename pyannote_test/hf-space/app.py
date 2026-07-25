@@ -6,6 +6,8 @@ Zugangsschlüssel (Secret APP_PASS); erst nach der Prüfung wird GPU-Zeit
 verbraucht.
 """
 import os
+import subprocess
+import tempfile
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -160,17 +162,30 @@ def _frontmatter(text):
 
 # ---------- API-Endpunkte ----------
 
+def _nach_wav(pfad):
+    """Konvertiert beliebige Audioformate (m4a, webm, …) nach 16-kHz-Mono-WAV."""
+    ziel = tempfile.NamedTemporaryFile(suffix=".wav", delete=False).name
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", pfad,
+                    "-ar", "16000", "-ac", "1", ziel], check=True)
+    return ziel
+
+
 def analysieren_api(key, audio, num_speakers):
     if not _pruefe(key):
         return {"ok": False, "fehler": "Ungültiger Zugangsschlüssel."}
     if not audio:
         return {"ok": False, "fehler": "Kein Audio übermittelt."}
+    quelle = os.path.basename(audio)
+    try:
+        audio = _nach_wav(audio)
+    except subprocess.CalledProcessError:
+        return {"ok": False, "fehler": "Audioformat konnte nicht gelesen werden."}
     try:
         daten = _analyse_gpu(audio, num_speakers)
     except Exception as e:
         return {"ok": False, "fehler": f"Analyse fehlgeschlagen: {e}"}
     zeitpunkt = datetime.now(ZEITZONE)
-    md_text = _markdown(daten, os.path.basename(audio), zeitpunkt)
+    md_text = _markdown(daten, quelle, zeitpunkt)
     try:
         pfad = _speichern(md_text, zeitpunkt)
     except Exception:

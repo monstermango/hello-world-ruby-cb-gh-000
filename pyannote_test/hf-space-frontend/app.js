@@ -3,6 +3,7 @@ const BACKEND = "https://monstermango-diarization.hf.space";
 const $ = (sel) => document.querySelector(sel);
 let client = null;
 let schluessel = localStorage.getItem("sa_key") || "";
+let hfToken = localStorage.getItem("sa_hf") || "";
 let audioDatei = null;
 let letztesMarkdown = null;
 let recorder = null;
@@ -31,7 +32,8 @@ async function rufe(endpunkt, daten) {
   if (!client) {
     const { Client } = await import(
       "https://cdn.jsdelivr.net/npm/@gradio/client/+esm");
-    client = await Client.connect(BACKEND);
+    const optionen = hfToken ? { hf_token: hfToken } : {};
+    client = await Client.connect(BACKEND, optionen);
   }
   const res = await client.predict(endpunkt, daten);
   return res.data[0];
@@ -51,6 +53,9 @@ async function loginPruefen(neuerKey) {
 $("#btn-login").addEventListener("click", async () => {
   const wert = $("#key-input").value.trim();
   if (!wert) return;
+  hfToken = $("#hf-input").value.trim();
+  if (hfToken) localStorage.setItem("sa_hf", hfToken);
+  client = null;
   $("#login-fehler").textContent = "";
   $("#btn-login").disabled = true;
   try {
@@ -68,6 +73,7 @@ $("#key-input").addEventListener("keydown", (e) => {
 
 $("#btn-key").addEventListener("click", () => {
   $("#key-input").value = "";
+  $("#hf-input").value = hfToken;
   $("#login").hidden = false;
 });
 
@@ -286,12 +292,18 @@ if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("sw.js").catch(() => {});
 }
 
-// Direktlink-Anmeldung: ?key=... übernimmt den Schlüssel und entfernt ihn
-// sofort wieder aus der Adresszeile.
-const urlKey = new URLSearchParams(location.search).get("key");
-if (urlKey) {
-  schluessel = urlKey.trim();
+// Direktlink-Anmeldung: ?key=...&hf=... übernimmt Schlüssel und HF-Token
+// und entfernt beides sofort wieder aus der Adresszeile.
+const urlParams = new URLSearchParams(location.search);
+if (urlParams.get("key")) {
+  schluessel = urlParams.get("key").trim();
   localStorage.setItem("sa_key", schluessel);
+}
+if (urlParams.get("hf")) {
+  hfToken = urlParams.get("hf").trim();
+  localStorage.setItem("sa_hf", hfToken);
+}
+if (urlParams.get("key") || urlParams.get("hf")) {
   history.replaceState(null, "", location.pathname);
 }
 

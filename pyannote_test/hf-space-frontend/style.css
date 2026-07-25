@@ -158,6 +158,7 @@ summary { min-height: 44px; display: flex; align-items: center; color: var(--dim
   padding: 24px 20px; max-width: 480px;
   margin: max(48px, env(safe-area-inset-top)) auto auto }
 .sheet h2 { margin-bottom: 6px }
+.klein { font-size: .8rem; margin-top: 6px }
 .sheet input { width: 100%; min-height: 50px; margin-top: 14px; padding: 0 14px;
   font-size: 16px; font-family: inherit;
   border: 1px solid var(--linie); border-radius: 12px;
