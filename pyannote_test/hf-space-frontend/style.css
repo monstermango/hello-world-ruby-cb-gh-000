@@ -119,6 +119,7 @@ summary { min-height: 44px; display: flex; align-items: center; color: var(--dim
   border-radius: 12px; overflow-wrap: anywhere }
 .sa-warn { margin-top: 14px; padding: 10px 14px; border-radius: 10px;
   background: var(--warn-bg); font-size: .9rem }
+.md-aktionen { margin-top: 16px }
 
 /* Verlauf */
 .v-card { width: 100%; text-align: left; background: var(--fläche);

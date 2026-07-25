@@ -192,7 +192,8 @@ def analysieren_api(key, audio, num_speakers):
         pfad = None
     namen, farben = _namen_farben(daten["stats"])
     return {"ok": True, "daten": daten, "namen": namen, "farben": farben,
-            "zeitpunkt": zeitpunkt.isoformat(timespec="seconds"), "pfad": pfad}
+            "zeitpunkt": zeitpunkt.isoformat(timespec="seconds"), "pfad": pfad,
+            "markdown": md_text}
 
 
 def verlauf_api(key):

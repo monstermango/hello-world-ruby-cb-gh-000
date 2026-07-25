@@ -220,7 +220,42 @@ function ergebnisAnzeigen(d) {
 
   $("#ergebnis").innerHTML =
     `<div class="card">${meta}<div class="sa-bar">${balken}</div>` +
-    `<div class="sa-legs">${legende}</div>${zeitleiste}${gespraech}${hinweis}</div>`;
+    `<div class="sa-legs">${legende}</div>${zeitleiste}${gespraech}${hinweis}` +
+    `<div class="row md-aktionen">` +
+    `<button id="btn-md-teilen" class="ghost grow">Teilen</button>` +
+    `<button id="btn-md-laden" class="ghost grow">Herunterladen</button>` +
+    `</div></div>`;
+
+  const name = (d.pfad || "analyse.md").split("/").pop();
+  letztesMarkdown = { text: d.markdown || "", name };
+  $("#btn-md-laden").addEventListener("click", () => mdHerunterladen());
+  const teilen = $("#btn-md-teilen");
+  if (navigator.share) {
+    teilen.addEventListener("click", async () => {
+      const datei = new File([letztesMarkdown.text], letztesMarkdown.name,
+                             { type: "text/markdown" });
+      try {
+        if (navigator.canShare && navigator.canShare({ files: [datei] })) {
+          await navigator.share({ files: [datei], title: letztesMarkdown.name });
+        } else {
+          await navigator.share({ title: letztesMarkdown.name,
+                                  text: letztesMarkdown.text });
+        }
+      } catch (e) { /* Abbruch durch Nutzer */ }
+    });
+  } else {
+    teilen.hidden = true;
+  }
+}
+
+function mdHerunterladen() {
+  if (!letztesMarkdown) return;
+  const blob = new Blob([letztesMarkdown.text], { type: "text/markdown" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = letztesMarkdown.name;
+  a.click();
+  URL.revokeObjectURL(a.href);
 }
 
 // ---------- Verlauf ----------
@@ -276,15 +311,7 @@ $("#btn-zurueck").addEventListener("click", () => {
   $("#verlauf-liste").hidden = false;
 });
 
-$("#btn-download").addEventListener("click", () => {
-  if (!letztesMarkdown) return;
-  const blob = new Blob([letztesMarkdown.text], { type: "text/markdown" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = letztesMarkdown.name;
-  a.click();
-  URL.revokeObjectURL(a.href);
-});
+$("#btn-download").addEventListener("click", () => mdHerunterladen());
 
 // ---------- Start ----------
 
