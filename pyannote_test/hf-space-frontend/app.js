@@ -62,6 +62,10 @@ $("#btn-login").addEventListener("click", async () => {
   }
 });
 
+$("#key-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") $("#btn-login").click();
+});
+
 $("#btn-key").addEventListener("click", () => {
   $("#key-input").value = "";
   $("#login").hidden = false;
@@ -280,6 +284,15 @@ $("#btn-download").addEventListener("click", () => {
 
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("sw.js").catch(() => {});
+}
+
+// Direktlink-Anmeldung: ?key=... übernimmt den Schlüssel und entfernt ihn
+// sofort wieder aus der Adresszeile.
+const urlKey = new URLSearchParams(location.search).get("key");
+if (urlKey) {
+  schluessel = urlKey.trim();
+  localStorage.setItem("sa_key", schluessel);
+  history.replaceState(null, "", location.pathname);
 }
 
 if (!schluessel) {
