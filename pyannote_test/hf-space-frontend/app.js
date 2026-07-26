@@ -218,9 +218,28 @@ $("#btn-analyse").addEventListener("click", async () => {
   }, 1000);
   try {
     const n = parseInt($("#num-speakers").value, 10) || 0;
-    const d = await rufeMitFortschritt(
-      "/analysieren", [schluessel, audioDatei, n],
-      (text) => ($("#progress-text").textContent = text));
+    const melde = (t) => ($("#progress-text").textContent = t);
+
+    // Jeder Schritt ist eine eigene Anfrage: eine einzelne lange Anfrage
+    // würde das Zeitlimit der GPU-Zuteilung überschreiten.
+    melde("Lade Audio hoch …");
+    const vor = await rufe("/vorbereiten", [schluessel, audioDatei]);
+    if (!vor.ok) throw new Error(vor.fehler);
+
+    melde("Erkenne Sprecher …");
+    const dia = await rufe("/diarisieren", [schluessel, vor.id, n]);
+    if (!dia.ok) throw new Error(dia.fehler);
+
+    for (let i = 0; i < dia.abschnitte; i++) {
+      melde(dia.abschnitte > 1
+        ? `Transkribiere Abschnitt ${i + 1} von ${dia.abschnitte} …`
+        : "Transkribiere …");
+      const tr = await rufe("/transkribieren", [schluessel, vor.id, i]);
+      if (!tr.ok) throw new Error(tr.fehler);
+    }
+
+    melde("Stelle Ergebnis zusammen …");
+    const d = await rufe("/abschliessen", [schluessel, vor.id]);
     if (!d.ok) throw new Error(d.fehler);
     letzteAnalyse = d;
     ergebnisAnzeigen(d, false);

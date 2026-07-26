@@ -6,8 +6,10 @@ Zugangsschlüssel (Secret APP_PASS); erst nach der Prüfung wird GPU-Zeit
 verbraucht.
 """
 import os
+import secrets
 import subprocess
 import tempfile
+import time
 import traceback
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -138,20 +140,7 @@ def _fenstergrenzen(turns, gesamt):
     return grenzen
 
 
-def _analyse(audio_path, num_speakers, melde=None):
-    gesamt = loader.get_duration(audio_path)
-    if melde:
-        melde("Erkenne Sprecher …")
-    turns, stats, overlaps = _diarize_gpu(audio_path, num_speakers)
-
-    grenzen = _fenstergrenzen(turns, gesamt)
-    chunks = []
-    for i in range(len(grenzen) - 1):
-        if melde and len(grenzen) > 2:
-            melde(f"Transkribiere Abschnitt {i + 1} von {len(grenzen) - 1} …")
-        elif melde:
-            melde("Transkribiere …")
-        chunks += _transkribiere_gpu(audio_path, grenzen[i], grenzen[i + 1])
+def _zusammenfuegen(turns, stats, overlaps, chunks, gesamt):
     sprache = next((c["sprache"] for c in chunks if c.get("sprache")), None)
 
     texte = [[] for _ in turns]
@@ -174,6 +163,32 @@ def _analyse(audio_path, num_speakers, melde=None):
 
     return {"dauer": round(gesamt, 1), "segmente": segmente, "stats": stats,
             "overlaps": overlaps, "sprache": sprache}
+
+
+# ---------- Sitzungen ----------
+# Lange Aufnahmen werden über mehrere HTTP-Anfragen verarbeitet: ein einzelner
+# Aufruf würde länger dauern als das ZeroGPU-Token einer Anfrage gültig ist.
+
+SITZUNGEN = {}
+SITZUNG_TTL = 3 * 3600
+
+
+def _aufraeumen():
+    jetzt = time.time()
+    for sid in [s for s, v in SITZUNGEN.items()
+                if jetzt - v["zeit"] > SITZUNG_TTL]:
+        try:
+            os.unlink(SITZUNGEN[sid]["wav"])
+        except OSError:
+            pass
+        SITZUNGEN.pop(sid, None)
+
+
+def _sitzung(sid):
+    s = SITZUNGEN.get(sid)
+    if s:
+        s["zeit"] = time.time()
+    return s
 
 
 # ---------- Markdown-Ablage ----------
@@ -253,29 +268,93 @@ def _nach_wav(pfad):
     return ziel
 
 
-def analysieren_api(key, audio, num_speakers, fortschritt=gr.Progress()):
+def vorbereiten_api(key, audio):
+    """Schritt 1: Audio entgegennehmen und in WAV wandeln."""
     if not _pruefe(key):
         return {"ok": False, "fehler": "Ungültiger Zugangsschlüssel."}
     if not audio:
         return {"ok": False, "fehler": "Kein Audio übermittelt."}
+    _aufraeumen()
     quelle = os.path.basename(audio)
-    fortschritt(0, desc="Bereite Audio vor …")
     try:
-        audio = _nach_wav(audio)
+        wav = _nach_wav(audio)
     except subprocess.CalledProcessError:
         return {"ok": False, "fehler": "Audioformat konnte nicht gelesen werden."}
+    sid = secrets.token_urlsafe(16)
+    SITZUNGEN[sid] = {"wav": wav, "quelle": quelle, "zeit": time.time(),
+                      "dauer": loader.get_duration(wav), "chunks": []}
+    return {"ok": True, "id": sid, "dauer": round(SITZUNGEN[sid]["dauer"], 1)}
+
+
+def diarisieren_api(key, sid, num_speakers):
+    """Schritt 2: Sprecher über die gesamte Aufnahme erkennen."""
+    if not _pruefe(key):
+        return {"ok": False, "fehler": "Ungültiger Zugangsschlüssel."}
+    s = _sitzung(sid)
+    if not s:
+        return {"ok": False, "fehler": "Sitzung abgelaufen. Bitte erneut starten."}
     try:
-        daten = _analyse(audio, num_speakers,
-                         melde=lambda t: fortschritt(None, desc=t))
+        turns, stats, overlaps = _diarize_gpu(s["wav"], num_speakers)
     except Exception as e:
         traceback.print_exc()
         return {"ok": False,
-                "fehler": f"Analyse fehlgeschlagen: {type(e).__name__}: {e}"}
+                "fehler": f"Sprechererkennung fehlgeschlagen: {type(e).__name__}: {e}"}
+    s.update(turns=turns, stats=stats, overlaps=overlaps, chunks=[],
+             fenster=_fenstergrenzen(turns, s["dauer"]))
+    return {"ok": True, "sprecher": len(stats),
+            "abschnitte": max(1, len(s["fenster"]) - 1)}
+
+
+def transkribieren_api(key, sid, index):
+    """Schritt 3: einen Abschnitt transkribieren (eigene Anfrage je Abschnitt)."""
+    if not _pruefe(key):
+        return {"ok": False, "fehler": "Ungültiger Zugangsschlüssel."}
+    s = _sitzung(sid)
+    if not s or "fenster" not in s:
+        return {"ok": False, "fehler": "Sitzung abgelaufen. Bitte erneut starten."}
+    i = int(index)
+    if not 0 <= i < len(s["fenster"]) - 1:
+        return {"ok": False, "fehler": "Ungültiger Abschnitt."}
+    try:
+        s["chunks"] += _transkribiere_gpu(s["wav"], s["fenster"][i],
+                                          s["fenster"][i + 1])
+    except Exception as e:
+        traceback.print_exc()
+        return {"ok": False,
+                "fehler": f"Transkription fehlgeschlagen: {type(e).__name__}: {e}"}
+    return {"ok": True, "index": i, "abschnitte": len(s["fenster"]) - 1}
+
+
+def abschliessen_api(key, sid):
+    """Schritt 4: Sprecher und Texte zusammenführen."""
+    if not _pruefe(key):
+        return {"ok": False, "fehler": "Ungültiger Zugangsschlüssel."}
+    s = _sitzung(sid)
+    if not s or "turns" not in s:
+        return {"ok": False, "fehler": "Sitzung abgelaufen. Bitte erneut starten."}
+    daten = _zusammenfuegen(s["turns"], s["stats"], s["overlaps"],
+                            s["chunks"], s["dauer"])
     zeitpunkt = datetime.now(ZEITZONE)
     namen, farben = _namen_farben(daten["stats"])
     return {"ok": True, "daten": daten, "namen": namen, "farben": farben,
             "zeitpunkt": zeitpunkt.isoformat(timespec="seconds"),
-            "quelle": quelle, "sprache": daten.get("sprache")}
+            "quelle": s["quelle"], "sprache": daten.get("sprache")}
+
+
+def analysieren_api(key, audio, num_speakers):
+    """Alle Schritte in einem Aufruf — nur für kurze Aufnahmen geeignet."""
+    vor = vorbereiten_api(key, audio)
+    if not vor.get("ok"):
+        return vor
+    sid = vor["id"]
+    dia = diarisieren_api(key, sid, num_speakers)
+    if not dia.get("ok"):
+        return dia
+    for i in range(dia["abschnitte"]):
+        tr = transkribieren_api(key, sid, i)
+        if not tr.get("ok"):
+            return tr
+    return abschliessen_api(key, sid)
 
 
 def speichern_api(key, analyse, namen):
@@ -344,6 +423,19 @@ with gr.Blocks(title="Sprecher-Analyse API") as demo:
         out_analyse = gr.JSON()
         b_analyse.click(analysieren_api, [key, audio, num_speakers],
                         out_analyse, api_name="analysieren")
+    with gr.Tab("Schrittweise (lange Aufnahmen)"):
+        sid = gr.Textbox(label="Sitzungs-ID")
+        idx = gr.Number(value=0, precision=0, label="Abschnitt")
+        gr.Button("1 · Vorbereiten").click(
+            vorbereiten_api, [key, audio], gr.JSON(), api_name="vorbereiten")
+        gr.Button("2 · Sprecher erkennen").click(
+            diarisieren_api, [key, sid, num_speakers], gr.JSON(),
+            api_name="diarisieren")
+        gr.Button("3 · Abschnitt transkribieren").click(
+            transkribieren_api, [key, sid, idx], gr.JSON(),
+            api_name="transkribieren")
+        gr.Button("4 · Abschließen").click(
+            abschliessen_api, [key, sid], gr.JSON(), api_name="abschliessen")
         analyse_json = gr.JSON(label="Analyse-Objekt (aus /analysieren)")
         namen_json = gr.JSON(label='Sprechernamen, z. B. {"SPEAKER_00": "Nils"}')
         b_speichern = gr.Button("Als Markdown speichern")
