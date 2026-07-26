@@ -38,9 +38,11 @@ diarizer = Pipeline.from_pretrained(
 )
 diarizer.to(torch.device("cuda"))
 
+# Volles large-v3 statt der Turbo-Variante: spürbar bessere Inhaltsqualität
+# bei realen Gesprächsaufnahmen.
 asr = hf_pipeline(
     "automatic-speech-recognition",
-    model="openai/whisper-large-v3-turbo",
+    model="openai/whisper-large-v3",
     torch_dtype=torch.float16,
     device="cuda",
 )
@@ -100,19 +102,43 @@ def _diarize_gpu(audio_path, num_speakers):
     return turns, stats, overlaps
 
 
-def _asr_dauer(audio_path, start, ende):
-    return int(min(120, max(30, 20 + (ende - start) / 10)))
-
-
-@spaces.GPU(duration=_asr_dauer)
-def _transkribiere_gpu(audio_path, start, ende):
-    """Transkribiert ein Fenster am Stück — voller Kontext, beste Qualität."""
-    wellenform, sr = loader.crop(audio_path, Segment(start, ende), mode="pad")
+@spaces.GPU(duration=30)
+def _sprache_gpu(audio_path, ab):
+    """Erkennt die Sprache einmalig anhand von 30 s ab der ersten Sprechstelle."""
+    wellenform, sr = loader.crop(audio_path, Segment(ab, ab + 30.0), mode="pad")
     eingabe = {"array": wellenform.squeeze(0).numpy(), "sampling_rate": sr}
     try:
         res = asr(eingabe, return_timestamps=True, return_language=True)
+        for c in res.get("chunks", []):
+            if c.get("language"):
+                return c["language"]
     except (TypeError, ValueError):
-        res = asr(eingabe, return_timestamps=True)
+        pass
+    return None
+
+
+def _asr_dauer(audio_path, start, ende, sprache=None):
+    return int(min(120, max(30, 20 + (ende - start) / 6)))
+
+
+@spaces.GPU(duration=_asr_dauer)
+def _transkribiere_gpu(audio_path, start, ende, sprache=None):
+    """Transkribiert ein Fenster am Stück — voller Kontext, beste Qualität.
+
+    Die Sprache wird fest vorgegeben: sonst rät Whisper sie pro Abschnitt
+    neu und kippt dabei gern mitten im Gespräch in eine englische
+    Übersetzung.
+    """
+    wellenform, sr = loader.crop(audio_path, Segment(start, ende), mode="pad")
+    eingabe = {"array": wellenform.squeeze(0).numpy(), "sampling_rate": sr}
+    gk = {"task": "transcribe"}
+    if sprache:
+        gk["language"] = sprache
+    try:
+        res = asr(eingabe, return_timestamps=True, generate_kwargs=gk,
+                  return_language=not sprache)
+    except (TypeError, ValueError):
+        res = asr(eingabe, return_timestamps=True, generate_kwargs=gk)
 
     chunks = []
     for c in res.get("chunks", []):
@@ -140,8 +166,9 @@ def _fenstergrenzen(turns, gesamt):
     return grenzen
 
 
-def _zusammenfuegen(turns, stats, overlaps, chunks, gesamt):
-    sprache = next((c["sprache"] for c in chunks if c.get("sprache")), None)
+def _zusammenfuegen(turns, stats, overlaps, chunks, gesamt, sprache=None):
+    sprache = sprache or next(
+        (c["sprache"] for c in chunks if c.get("sprache")), None)
 
     texte = [[] for _ in turns]
     for c in chunks:
@@ -286,7 +313,7 @@ def vorbereiten_api(key, audio):
     return {"ok": True, "id": sid, "dauer": round(SITZUNGEN[sid]["dauer"], 1)}
 
 
-def diarisieren_api(key, sid, num_speakers):
+def diarisieren_api(key, sid, num_speakers, sprache=None):
     """Schritt 2: Sprecher über die gesamte Aufnahme erkennen."""
     if not _pruefe(key):
         return {"ok": False, "fehler": "Ungültiger Zugangsschlüssel."}
@@ -299,9 +326,15 @@ def diarisieren_api(key, sid, num_speakers):
         traceback.print_exc()
         return {"ok": False,
                 "fehler": f"Sprechererkennung fehlgeschlagen: {type(e).__name__}: {e}"}
+    sprache = (sprache or "").strip() or None
+    if not sprache:
+        try:
+            sprache = _sprache_gpu(s["wav"], turns[0]["start"] if turns else 0.0)
+        except Exception:
+            sprache = None
     s.update(turns=turns, stats=stats, overlaps=overlaps, chunks=[],
-             fenster=_fenstergrenzen(turns, s["dauer"]))
-    return {"ok": True, "sprecher": len(stats),
+             sprache=sprache, fenster=_fenstergrenzen(turns, s["dauer"]))
+    return {"ok": True, "sprecher": len(stats), "sprache": sprache,
             "abschnitte": max(1, len(s["fenster"]) - 1)}
 
 
@@ -317,7 +350,8 @@ def transkribieren_api(key, sid, index):
         return {"ok": False, "fehler": "Ungültiger Abschnitt."}
     try:
         s["chunks"] += _transkribiere_gpu(s["wav"], s["fenster"][i],
-                                          s["fenster"][i + 1])
+                                          s["fenster"][i + 1],
+                                          s.get("sprache"))
     except Exception as e:
         traceback.print_exc()
         return {"ok": False,
@@ -333,7 +367,7 @@ def abschliessen_api(key, sid):
     if not s or "turns" not in s:
         return {"ok": False, "fehler": "Sitzung abgelaufen. Bitte erneut starten."}
     daten = _zusammenfuegen(s["turns"], s["stats"], s["overlaps"],
-                            s["chunks"], s["dauer"])
+                            s["chunks"], s["dauer"], s.get("sprache"))
     zeitpunkt = datetime.now(ZEITZONE)
     namen, farben = _namen_farben(daten["stats"])
     return {"ok": True, "daten": daten, "namen": namen, "farben": farben,
@@ -341,13 +375,13 @@ def abschliessen_api(key, sid):
             "quelle": s["quelle"], "sprache": daten.get("sprache")}
 
 
-def analysieren_api(key, audio, num_speakers):
+def analysieren_api(key, audio, num_speakers, sprache=None):
     """Alle Schritte in einem Aufruf — nur für kurze Aufnahmen geeignet."""
     vor = vorbereiten_api(key, audio)
     if not vor.get("ok"):
         return vor
     sid = vor["id"]
-    dia = diarisieren_api(key, sid, num_speakers)
+    dia = diarisieren_api(key, sid, num_speakers, sprache)
     if not dia.get("ok"):
         return dia
     for i in range(dia["abschnitte"]):
@@ -419,9 +453,11 @@ with gr.Blocks(title="Sprecher-Analyse API") as demo:
                          label="Audio")
         num_speakers = gr.Number(value=0, precision=0,
                                  label="Anzahl Sprecher (0 = automatisch)")
+        sprache_feld = gr.Textbox(label="Sprache (leer = automatisch)",
+                                  value="german")
         b_analyse = gr.Button("Analysieren", variant="primary")
         out_analyse = gr.JSON()
-        b_analyse.click(analysieren_api, [key, audio, num_speakers],
+        b_analyse.click(analysieren_api, [key, audio, num_speakers, sprache_feld],
                         out_analyse, api_name="analysieren")
     with gr.Tab("Schrittweise (lange Aufnahmen)"):
         sid = gr.Textbox(label="Sitzungs-ID")
@@ -429,7 +465,7 @@ with gr.Blocks(title="Sprecher-Analyse API") as demo:
         gr.Button("1 · Vorbereiten").click(
             vorbereiten_api, [key, audio], gr.JSON(), api_name="vorbereiten")
         gr.Button("2 · Sprecher erkennen").click(
-            diarisieren_api, [key, sid, num_speakers], gr.JSON(),
+            diarisieren_api, [key, sid, num_speakers, sprache_feld], gr.JSON(),
             api_name="diarisieren")
         gr.Button("3 · Abschnitt transkribieren").click(
             transkribieren_api, [key, sid, idx], gr.JSON(),

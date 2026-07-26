@@ -237,7 +237,9 @@ $("#btn-analyse").addEventListener("click", async () => {
     if (!vor.ok) throw new Error(vor.fehler);
 
     melde("Erkenne Sprecher …");
-    const dia = await rufe("/diarisieren", [schluessel, vor.id, n]);
+    const spr = $("#sprache").value;
+    localStorage.setItem("sa_sprache", spr);
+    const dia = await rufe("/diarisieren", [schluessel, vor.id, n, spr]);
     if (!dia.ok) throw new Error(dia.fehler);
 
     for (let i = 0; i < dia.abschnitte; i++) {
@@ -479,6 +481,9 @@ if (urlParams.get("hf")) {
 if (urlParams.get("key") || urlParams.get("hf")) {
   history.replaceState(null, "", location.pathname);
 }
+
+const gemerkteSprache = localStorage.getItem("sa_sprache");
+if (gemerkteSprache !== null) $("#sprache").value = gemerkteSprache;
 
 if (!schluessel) {
   $("#login").hidden = false;

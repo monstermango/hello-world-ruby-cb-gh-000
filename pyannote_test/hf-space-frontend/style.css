@@ -86,6 +86,11 @@ summary { min-height: 44px; display: flex; align-items: center; color: var(--dim
   border: 1px solid var(--linie); border-radius: 10px;
   background: var(--bg); color: var(--text);
 }
+.opt select {
+  min-height: 44px; padding: 0 10px; font-size: 16px; font-family: inherit;
+  border: 1px solid var(--linie); border-radius: 10px;
+  background: var(--bg); color: var(--text);
+}
 
 .spinner {
   width: 32px; height: 32px; border-radius: 50%;
