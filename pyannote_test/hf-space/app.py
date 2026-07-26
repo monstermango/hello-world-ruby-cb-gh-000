@@ -8,6 +8,7 @@ verbraucht.
 import os
 import subprocess
 import tempfile
+import traceback
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -104,7 +105,7 @@ def _asr_dauer(audio_path, start, ende):
 @spaces.GPU(duration=_asr_dauer)
 def _transkribiere_gpu(audio_path, start, ende):
     """Transkribiert ein Fenster am Stück — voller Kontext, beste Qualität."""
-    wellenform, sr = loader.crop(audio_path, Segment(start, ende))
+    wellenform, sr = loader.crop(audio_path, Segment(start, ende), mode="pad")
     eingabe = {"array": wellenform.squeeze(0).numpy(), "sampling_rate": sr}
     try:
         res = asr(eingabe, return_timestamps=True, return_language=True)
@@ -138,7 +139,7 @@ def _fenstergrenzen(turns, gesamt):
 
 
 def _analyse(audio_path, num_speakers, melde=None):
-    gesamt = round(loader.get_duration(audio_path), 1)
+    gesamt = loader.get_duration(audio_path)
     if melde:
         melde("Erkenne Sprecher …")
     turns, stats, overlaps = _diarize_gpu(audio_path, num_speakers)
@@ -171,7 +172,7 @@ def _analyse(audio_path, num_speakers, melde=None):
                  "text": " ".join(texte[i]) or None}
                 for i, t in enumerate(turns)]
 
-    return {"dauer": gesamt, "segmente": segmente, "stats": stats,
+    return {"dauer": round(gesamt, 1), "segmente": segmente, "stats": stats,
             "overlaps": overlaps, "sprache": sprache}
 
 
@@ -267,7 +268,9 @@ def analysieren_api(key, audio, num_speakers, fortschritt=gr.Progress()):
         daten = _analyse(audio, num_speakers,
                          melde=lambda t: fortschritt(None, desc=t))
     except Exception as e:
-        return {"ok": False, "fehler": f"Analyse fehlgeschlagen: {e}"}
+        traceback.print_exc()
+        return {"ok": False,
+                "fehler": f"Analyse fehlgeschlagen: {type(e).__name__}: {e}"}
     zeitpunkt = datetime.now(ZEITZONE)
     namen, farben = _namen_farben(daten["stats"])
     return {"ok": True, "daten": daten, "namen": namen, "farben": farben,
