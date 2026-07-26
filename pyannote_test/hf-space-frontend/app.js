@@ -233,8 +233,10 @@ $("#btn-analyse").addEventListener("click", async () => {
     // Jeder Schritt ist eine eigene Anfrage: eine einzelne lange Anfrage
     // würde das Zeitlimit der GPU-Zuteilung überschreiten.
     melde("Lade Audio hoch …");
-    const vor = await rufe("/vorbereiten", [schluessel, audioDatei]);
+    const transkript = $("#transkript").value.trim();
+    const vor = await rufe("/vorbereiten", [schluessel, audioDatei, transkript]);
     if (!vor.ok) throw new Error(vor.fehler);
+    const eigenerText = vor.modus === "transkript";
 
     melde("Erkenne Sprecher …");
     const spr = $("#sprache").value;
@@ -242,12 +244,14 @@ $("#btn-analyse").addEventListener("click", async () => {
     const dia = await rufe("/diarisieren", [schluessel, vor.id, n, spr]);
     if (!dia.ok) throw new Error(dia.fehler);
 
-    for (let i = 0; i < dia.abschnitte; i++) {
+    for (let i = 0; ; i++) {
+      const was = eigenerText ? "Ordne Text zu" : "Transkribiere";
       melde(dia.abschnitte > 1
-        ? `Transkribiere Abschnitt ${i + 1} von ${dia.abschnitte} …`
-        : "Transkribiere …");
+        ? `${was} — Abschnitt ${Math.min(i + 1, dia.abschnitte)} von ${dia.abschnitte} …`
+        : `${was} …`);
       const tr = await rufe("/transkribieren", [schluessel, vor.id, i]);
       if (!tr.ok) throw new Error(tr.fehler);
+      if (!tr.weiter) break;
     }
 
     melde("Stelle Ergebnis zusammen …");
@@ -481,6 +485,14 @@ if (urlParams.get("hf")) {
 if (urlParams.get("key") || urlParams.get("hf")) {
   history.replaceState(null, "", location.pathname);
 }
+
+$("#transkript").addEventListener("input", () => {
+  const n = $("#transkript").value.trim().split(/\s+/).filter(Boolean).length;
+  $("#transkript-info").textContent = n
+    ? `${n} Wörter — wird den Sprechern zugeordnet statt neu erkannt.`
+    : "";
+  if (n) $("#transkript-box").open = true;
+});
 
 const gemerkteSprache = localStorage.getItem("sa_sprache");
 if (gemerkteSprache !== null) $("#sprache").value = gemerkteSprache;
