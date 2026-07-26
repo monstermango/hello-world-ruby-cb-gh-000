@@ -33,7 +33,9 @@
       </button>
       <div id="rec-status" class="dim">Zum Aufnehmen tippen</div>
       <button id="btn-datei" class="ghost">Audiodatei wählen</button>
-      <input type="file" id="file-input" accept="audio/*" hidden>
+      <div class="dim klein">z. B. eine Sprachmemo aus „Dateien“ oder iCloud</div>
+      <!-- Kein enger Filter: iOS blendet sonst m4a-Dateien aus iCloud aus. -->
+      <input type="file" id="file-input" hidden>
     </div>
 
     <div id="audio-panel" class="card" hidden>

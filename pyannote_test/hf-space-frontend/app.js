@@ -126,15 +126,25 @@ document.querySelectorAll(".tab").forEach((btn) => {
 
 function setzeAudio(datei) {
   audioDatei = datei;
-  $("#audio-name").textContent = datei.name;
+  const mb = datei.size / 1048576;
+  $("#audio-name").textContent =
+    `${datei.name} (${mb < 1 ? Math.round(datei.size / 1024) + " KB"
+                             : mb.toFixed(1) + " MB"})`;
   $("#audio-preview").src = URL.createObjectURL(datei);
   $("#audio-panel").hidden = false;
   $("#ergebnis").innerHTML = "";
+  letzteAnalyse = null;
 }
 
 $("#btn-datei").addEventListener("click", () => $("#file-input").click());
 $("#file-input").addEventListener("change", (e) => {
-  if (e.target.files[0]) setzeAudio(e.target.files[0]);
+  const datei = e.target.files[0];
+  if (!datei) return;
+  if (!datei.size) {
+    toast("Datei ist leer — liegt sie noch in iCloud? Erst herunterladen.");
+    return;
+  }
+  setzeAudio(datei);
 });
 $("#btn-verwerfen").addEventListener("click", () => {
   audioDatei = null;
