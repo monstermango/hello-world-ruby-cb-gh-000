@@ -17,6 +17,7 @@ const SPRACHEN = {
 let recorder = null;
 let recChunks = [];
 let recTimer = null;
+let wakeLock = null;
 
 // ---------- Hilfen ----------
 
@@ -36,15 +37,38 @@ function toast(msg) {
   t._x = setTimeout(() => (t.hidden = true), 4000);
 }
 
-async function rufe(endpunkt, daten) {
+async function verbinde() {
   if (!client) {
     const { Client } = await import(
       "https://cdn.jsdelivr.net/npm/@gradio/client/+esm");
     const optionen = hfToken ? { hf_token: hfToken } : {};
     client = await Client.connect(BACKEND, optionen);
   }
-  const res = await client.predict(endpunkt, daten);
+  return client;
+}
+
+async function rufe(endpunkt, daten) {
+  const c = await verbinde();
+  const res = await c.predict(endpunkt, daten);
   return res.data[0];
+}
+
+// Wie rufe(), meldet aber Zwischenstände des Backends (lange Aufnahmen).
+async function rufeMitFortschritt(endpunkt, daten, melde) {
+  const c = await verbinde();
+  const job = c.submit(endpunkt, daten);
+  let ergebnis = null;
+  for await (const nachricht of job) {
+    if (nachricht.type === "data") {
+      ergebnis = nachricht.data[0];
+    } else if (nachricht.type === "status" && melde) {
+      const stufe = (nachricht.progress_data || [])[0];
+      if (stufe && stufe.desc) melde(stufe.desc);
+      else if (nachricht.stage === "pending" && nachricht.queue) melde("In der Warteschlange …");
+    }
+  }
+  if (ergebnis === null) throw new Error("Keine Antwort vom Server.");
+  return ergebnis;
 }
 
 // ---------- Login ----------
@@ -126,26 +150,57 @@ $("#btn-record").addEventListener("click", async () => {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     const mime = MediaRecorder.isTypeSupported("audio/mp4")
       ? "audio/mp4" : "audio/webm";
-    recorder = new MediaRecorder(stream, { mimeType: mime });
+    // Niedrige Bitrate: eine Stunde Sprache bleibt so bei ~20 MB.
+    recorder = new MediaRecorder(stream, { mimeType: mime,
+                                           audioBitsPerSecond: 48000 });
     recChunks = [];
-    recorder.ondataavailable = (e) => recChunks.push(e.data);
+    recorder.ondataavailable = (e) => {
+      if (e.data && e.data.size) recChunks.push(e.data);
+    };
     recorder.onstop = () => {
       stream.getTracks().forEach((t) => t.stop());
       clearInterval(recTimer);
+      wakeLockFreigeben();
       $("#btn-record").classList.remove("aktiv");
       $("#rec-status").textContent = "Zum Aufnehmen tippen";
       const endung = mime === "audio/mp4" ? "m4a" : "webm";
       setzeAudio(new File(recChunks, `aufnahme.${endung}`, { type: mime }));
     };
-    recorder.start();
+    // Sekündlich Daten abholen, damit lange Aufnahmen nicht am Stück im
+    // Arbeitsspeicher gehalten werden.
+    recorder.start(5000);
+    await wakeLockAnfordern();
     $("#btn-record").classList.add("aktiv");
     const startZeit = Date.now();
     recTimer = setInterval(() => {
+      const s = (Date.now() - startZeit) / 1000;
       $("#rec-status").textContent =
-        `Aufnahme läuft … ${zeit((Date.now() - startZeit) / 1000)} — zum Stoppen tippen`;
+        `Aufnahme läuft … ${zeit(s)} — zum Stoppen tippen`;
+      if (s > 3600 && recorder.state === "recording") {
+        recorder.stop();
+        toast("Aufnahme nach 60 Minuten automatisch beendet.");
+      }
     }, 500);
   } catch (e) {
     toast("Kein Mikrofonzugriff: " + e.message);
+  }
+});
+
+// Bildschirmsperre verhindern — sonst pausiert iOS die Aufnahme.
+async function wakeLockAnfordern() {
+  try {
+    if ("wakeLock" in navigator) wakeLock = await navigator.wakeLock.request("screen");
+  } catch (e) { /* nicht verfügbar */ }
+}
+
+function wakeLockFreigeben() {
+  if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+}
+
+document.addEventListener("visibilitychange", async () => {
+  if (document.visibilityState === "visible" && recorder
+      && recorder.state === "recording" && !wakeLock) {
+    await wakeLockAnfordern();
   }
 });
 
@@ -155,16 +210,24 @@ $("#btn-analyse").addEventListener("click", async () => {
   if (!audioDatei) return;
   $("#btn-analyse").disabled = true;
   $("#progress").hidden = false;
+  $("#progress-text").textContent = "Lade Audio hoch …";
   $("#ergebnis").innerHTML = "";
+  const start = Date.now();
+  const ticker = setInterval(() => {
+    $("#progress-zeit").textContent = zeit((Date.now() - start) / 1000);
+  }, 1000);
   try {
     const n = parseInt($("#num-speakers").value, 10) || 0;
-    const d = await rufe("/analysieren", [schluessel, audioDatei, n]);
+    const d = await rufeMitFortschritt(
+      "/analysieren", [schluessel, audioDatei, n],
+      (text) => ($("#progress-text").textContent = text));
     if (!d.ok) throw new Error(d.fehler);
     letzteAnalyse = d;
     ergebnisAnzeigen(d, false);
   } catch (e) {
     toast("Fehler: " + e.message);
   } finally {
+    clearInterval(ticker);
     $("#btn-analyse").disabled = false;
     $("#progress").hidden = true;
   }

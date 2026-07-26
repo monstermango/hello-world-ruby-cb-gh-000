@@ -63,72 +63,116 @@ def _pruefe(key):
     return bool(key) and key == APP_KEY
 
 
-def _gpu_dauer(audio_path, num_speakers):
-    """Reserviert GPU-Zeit passend zur Audiolänge statt pauschal zu viel."""
+# Lange Aufnahmen werden in Fenster zerlegt, damit jeder GPU-Aufruf innerhalb
+# des ZeroGPU-Limits bleibt. Die Diarization läuft trotzdem über die gesamte
+# Datei, sonst wären die Sprecher zwischen den Fenstern nicht dieselben.
+FENSTER = 600.0
+
+
+def _diar_dauer(audio_path, num_speakers):
     try:
         laenge = loader.get_duration(audio_path)
     except Exception:
-        laenge = 600
-    return int(min(120, max(30, 15 + laenge / 6)))
+        laenge = 1800
+    return int(min(120, max(30, 20 + laenge / 40)))
 
 
-@spaces.GPU(duration=_gpu_dauer)
-def _analyse_gpu(audio_path, num_speakers):
+@spaces.GPU(duration=_diar_dauer)
+def _diarize_gpu(audio_path, num_speakers):
     kwargs = {}
     if num_speakers and int(num_speakers) > 0:
         kwargs["num_speakers"] = int(num_speakers)
     output = diarizer(audio_path, **kwargs)
     dia = getattr(output, "speaker_diarization", output)
 
-    # Die ganze Aufnahme in einem Stück transkribieren: voller Kontext liefert
-    # deutlich bessere Texte als Einzelsegmente; die Sprache erkennt Whisper
-    # dabei automatisch.
-    transkript = asr(audio_path, return_timestamps=True, return_language=True)
+    turns = [{"start": round(t.start, 2), "ende": round(t.end, 2), "label": lb}
+             for t, _, lb in dia.itertracks(yield_label=True)]
+    stats = {lb: {"dauer": round(dia.label_duration(lb), 1),
+                  "turns": len(dia.label_timeline(lb))}
+             for lb in sorted(dia.labels())}
+    overlaps = [{"start": round(seg.start, 2), "ende": round(seg.end, 2),
+                 "wer": sorted(lb for lb in dia.labels()
+                               if dia.label_timeline(lb).crop(seg))}
+                for seg in dia.get_overlap()]
+    return turns, stats, overlaps
+
+
+def _asr_dauer(audio_path, start, ende):
+    return int(min(120, max(30, 20 + (ende - start) / 10)))
+
+
+@spaces.GPU(duration=_asr_dauer)
+def _transkribiere_gpu(audio_path, start, ende):
+    """Transkribiert ein Fenster am Stück — voller Kontext, beste Qualität."""
+    wellenform, sr = loader.crop(audio_path, Segment(start, ende))
+    eingabe = {"array": wellenform.squeeze(0).numpy(), "sampling_rate": sr}
+    try:
+        res = asr(eingabe, return_timestamps=True, return_language=True)
+    except (TypeError, ValueError):
+        res = asr(eingabe, return_timestamps=True)
+
     chunks = []
-    for c in transkript.get("chunks", []):
-        start, ende = c.get("timestamp") or (None, None)
-        if start is None or not c.get("text", "").strip():
+    for c in res.get("chunks", []):
+        ts = c.get("timestamp") or (None, None)
+        if ts[0] is None or not c.get("text", "").strip():
             continue
-        chunks.append({"start": float(start),
-                       "ende": float(ende if ende is not None else start + 30.0),
+        bis = ts[1] if ts[1] is not None else ts[0] + 30.0
+        chunks.append({"start": float(ts[0]) + start,
+                       "ende": float(bis) + start,
                        "text": c["text"].strip(),
                        "sprache": c.get("language")})
+    return chunks
+
+
+def _fenstergrenzen(turns, gesamt):
+    """Schnittpunkte möglichst in Sprechpausen legen, damit kein Wort zerfällt."""
+    grenzen, pos = [0.0], 0.0
+    while gesamt - pos > FENSTER:
+        ziel = pos + FENSTER
+        kandidaten = [t["start"] for t in turns if pos + 60 < t["start"] < ziel + 120]
+        grenzen.append(min(kandidaten, key=lambda x: abs(x - ziel))
+                       if kandidaten else ziel)
+        pos = grenzen[-1]
+    grenzen.append(gesamt)
+    return grenzen
+
+
+def _analyse(audio_path, num_speakers, melde=None):
+    gesamt = round(loader.get_duration(audio_path), 1)
+    if melde:
+        melde("Erkenne Sprecher …")
+    turns, stats, overlaps = _diarize_gpu(audio_path, num_speakers)
+
+    grenzen = _fenstergrenzen(turns, gesamt)
+    chunks = []
+    for i in range(len(grenzen) - 1):
+        if melde and len(grenzen) > 2:
+            melde(f"Transkribiere Abschnitt {i + 1} von {len(grenzen) - 1} …")
+        elif melde:
+            melde("Transkribiere …")
+        chunks += _transkribiere_gpu(audio_path, grenzen[i], grenzen[i + 1])
     sprache = next((c["sprache"] for c in chunks if c.get("sprache")), None)
 
-    turns = [(turn, lb) for turn, _, lb in dia.itertracks(yield_label=True)]
     texte = [[] for _ in turns]
     for c in chunks:
         mitte = (c["start"] + c["ende"]) / 2
         best, best_wert = None, None
-        for i, (turn, _) in enumerate(turns):
-            ueberlappung = max(0.0, min(c["ende"], turn.end)
-                               - max(c["start"], turn.start))
-            abstand = abs(mitte - (turn.start + turn.end) / 2)
+        for i, t in enumerate(turns):
+            ueberlappung = max(0.0, min(c["ende"], t["ende"])
+                               - max(c["start"], t["start"]))
+            abstand = abs(mitte - (t["start"] + t["ende"]) / 2)
             wert = (-ueberlappung, abstand)
             if best_wert is None or wert < best_wert:
                 best, best_wert = i, wert
         if best is not None:
             texte[best].append(c["text"])
 
-    segmente = []
-    for i, (turn, lb) in enumerate(turns):
-        segmente.append({"start": round(turn.start, 2),
-                         "ende": round(turn.end, 2), "label": lb,
-                         "text": " ".join(texte[i]) or None})
+    segmente = [{"start": t["start"], "ende": t["ende"], "label": t["label"],
+                 "text": " ".join(texte[i]) or None}
+                for i, t in enumerate(turns)]
 
-    stats = {lb: {"dauer": round(dia.label_duration(lb), 1),
-                  "turns": len(dia.label_timeline(lb))}
-             for lb in sorted(dia.labels())}
-
-    overlaps = []
-    for seg in dia.get_overlap():
-        wer = sorted(lb for lb in dia.labels() if dia.label_timeline(lb).crop(seg))
-        overlaps.append({"start": round(seg.start, 2),
-                         "ende": round(seg.end, 2), "wer": wer})
-
-    return {"dauer": round(loader.get_duration(audio_path), 1),
-            "segmente": segmente, "stats": stats, "overlaps": overlaps,
-            "sprache": sprache}
+    return {"dauer": gesamt, "segmente": segmente, "stats": stats,
+            "overlaps": overlaps, "sprache": sprache}
 
 
 # ---------- Markdown-Ablage ----------
@@ -208,18 +252,20 @@ def _nach_wav(pfad):
     return ziel
 
 
-def analysieren_api(key, audio, num_speakers):
+def analysieren_api(key, audio, num_speakers, fortschritt=gr.Progress()):
     if not _pruefe(key):
         return {"ok": False, "fehler": "Ungültiger Zugangsschlüssel."}
     if not audio:
         return {"ok": False, "fehler": "Kein Audio übermittelt."}
     quelle = os.path.basename(audio)
+    fortschritt(0, desc="Bereite Audio vor …")
     try:
         audio = _nach_wav(audio)
     except subprocess.CalledProcessError:
         return {"ok": False, "fehler": "Audioformat konnte nicht gelesen werden."}
     try:
-        daten = _analyse_gpu(audio, num_speakers)
+        daten = _analyse(audio, num_speakers,
+                         melde=lambda t: fortschritt(None, desc=t))
     except Exception as e:
         return {"ok": False, "fehler": f"Analyse fehlgeschlagen: {e}"}
     zeitpunkt = datetime.now(ZEITZONE)
