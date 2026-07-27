@@ -941,12 +941,20 @@ def _daten_sichern(s):
 
 
 def glaetten_api(key, sid, index=0):
-    """Schritt 4: Text mit Sprachgefühl glätten (blockweise)."""
+    """Schritt 4: Text mit Sprachgefühl glätten (blockweise).
+
+    Ein selbst mitgebrachtes Transkript wird nicht angetastet — es ist eine
+    bewusste Entscheidung des Nutzers und soll wortgetreu erhalten bleiben.
+    """
     if not _pruefe(key):
         return {"ok": False, "fehler": "Ungültiger Zugangsschlüssel."}
     s = _sitzung(sid)
     if not s or "turns" not in s:
         return {"ok": False, "fehler": "Sitzung abgelaufen. Bitte erneut starten."}
+    if s.get("worte"):
+        _daten_sichern(s)
+        return {"ok": True, "weiter": False, "abschnitte": 0,
+                "uebersprungen": "eigenes Transkript"}
     daten = _daten_sichern(s)
     i = s["korr_i"]
     if i >= len(s["korr_bloecke"]):
