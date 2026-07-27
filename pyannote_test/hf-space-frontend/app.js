@@ -41,7 +41,10 @@ async function verbinde() {
   if (!client) {
     const { Client } = await import(
       "https://cdn.jsdelivr.net/npm/@gradio/client/+esm");
-    const optionen = hfToken ? { hf_token: hfToken } : {};
+    // Der Client liest die Option als `token`; ältere Versionen als
+    // `hf_token`. Beide setzen, damit das Token sicher als Bearer-Header
+    // mitgeht — sonst läuft alles auf dem anonymen GPU-Kontingent.
+    const optionen = hfToken ? { token: hfToken, hf_token: hfToken } : {};
     client = await Client.connect(BACKEND, optionen);
   }
   return client;
@@ -105,14 +108,23 @@ async function tokenStatusPruefen() {
 
 $("#btn-login").addEventListener("click", async () => {
   const wert = $("#key-input").value.trim();
-  if (!wert) return;
-  hfToken = $("#hf-input").value.trim();
-  if (hfToken) localStorage.setItem("sa_hf", hfToken);
+  if (!wert) {
+    $("#login-fehler").textContent = "Bitte den Zugangsschlüssel eingeben.";
+    return;
+  }
+  // Leeres Feld darf ein bereits gespeichertes Token nicht löschen.
+  const eingabe = $("#hf-input").value.trim();
+  if (eingabe) {
+    hfToken = eingabe;
+    localStorage.setItem("sa_hf", hfToken);
+  }
   client = null;
   $("#login-fehler").textContent = "";
   $("#btn-login").disabled = true;
   try {
     await loginPruefen(wert);
+    toast(tokenAktiv ? "Token aktiv — GPU läuft über dein Konto."
+                     : "Angemeldet, aber ohne gültiges HF-Token.");
   } catch (e) {
     $("#login-fehler").textContent = e.message;
   } finally {
@@ -522,6 +534,7 @@ $("#transkript").addEventListener("input", () => {
 
 const gemerkteSprache = localStorage.getItem("sa_sprache");
 if (gemerkteSprache !== null) $("#sprache").value = gemerkteSprache;
+$("#hf-input").value = hfToken;
 
 if (!schluessel) {
   $("#login").hidden = false;
