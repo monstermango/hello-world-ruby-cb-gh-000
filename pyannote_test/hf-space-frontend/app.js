@@ -151,8 +151,10 @@ document.querySelectorAll(".tab").forEach((btn) => {
       b.classList.toggle("active", b === btn));
     const ziel = btn.dataset.view;
     $("#view-analyse").hidden = ziel !== "analyse";
+    $("#view-glossar").hidden = ziel !== "glossar";
     $("#view-verlauf").hidden = ziel !== "verlauf";
     if (ziel === "verlauf") verlaufLaden();
+    if (ziel === "glossar") glossarLaden();
   });
 });
 
@@ -451,18 +453,37 @@ function ergebnisAnzeigen(d, gespeichert) {
       `<button id="btn-md-laden" class="ghost grow">Herunterladen</button>` +
       `</div>`;
   } else {
-    let felder = "";
+    const bekannte = d.sprecher_bekannt || [];
+    const liste = bekannte.length
+      ? `<datalist id="namen-liste">` +
+        bekannte.map((n) => `<option value="${esc(n)}">`).join("") +
+        `</datalist>`
+      : "";
+    let felder = liste;
     for (const lb of labels) {
       felder +=
         `<label class="row namen-zeile">` +
         `<span class="punkt" style="background:${farben[lb]}"></span>` +
         `<input class="namen-feld" data-label="${esc(lb)}" type="text" ` +
+        (bekannte.length ? `list="namen-liste" ` : "") +
         `placeholder="${esc(namen[lb])}" autocomplete="off"></label>`;
     }
+
+    let vorschlaege = "";
+    if ((d.vorschlaege || []).length) {
+      vorschlaege =
+        `<div class="sa-h">Begriffe fürs Glossar</div>` +
+        `<div class="dim">Antippen übernimmt sie dauerhaft — künftige ` +
+        `Aufnahmen werden dadurch treffsicherer.</div><div id="vorschlaege">` +
+        d.vorschlaege.map((w) =>
+          `<button class="vorschlag" data-wort="${esc(w)}">+ ${esc(w)}</button>`
+        ).join("") + `</div>`;
+    }
+
     abschluss =
       `<div class="sa-h">Sprecher benennen</div>` +
       `<div class="dim">Optional — leere Felder behalten den Standardnamen.</div>` +
-      felder +
+      felder + vorschlaege +
       `<button id="btn-speichern" class="primary">Als Markdown speichern</button>`;
   }
 
@@ -492,6 +513,20 @@ function ergebnisAnzeigen(d, gespeichert) {
     }
   } else {
     $("#btn-speichern").addEventListener("click", speichern);
+    document.querySelectorAll(".vorschlag").forEach((b) => {
+      b.addEventListener("click", async () => {
+        if (b.classList.contains("drin")) return;
+        b.classList.add("drin");
+        try {
+          const neu = [...glossar.begriffe, b.dataset.wort];
+          await glossarSpeichern(neu.join("\n"), glossar.sprecher.join("\n"));
+          toast(`„${b.dataset.wort}" ins Glossar übernommen.`);
+        } catch (e) {
+          b.classList.remove("drin");
+          toast("Glossar: " + e.message);
+        }
+      });
+    });
   }
 }
 
@@ -525,6 +560,42 @@ function mdHerunterladen() {
   a.click();
   URL.revokeObjectURL(a.href);
 }
+
+// ---------- Glossar ----------
+
+let glossar = { begriffe: [], sprecher: [] };
+
+async function glossarLaden() {
+  try {
+    const g = await rufe("/glossar", [schluessel]);
+    if (!g.ok) throw new Error(g.fehler);
+    glossar = { begriffe: g.begriffe || [], sprecher: g.sprecher || [] };
+    $("#g-begriffe").value = glossar.begriffe.join("\n");
+    $("#g-sprecher").value = glossar.sprecher.join("\n");
+  } catch (e) {
+    toast("Glossar: " + e.message);
+  }
+}
+
+async function glossarSpeichern(begriffe, sprecher) {
+  const g = await rufe("/glossar_speichern", [schluessel, begriffe, sprecher]);
+  if (!g.ok) throw new Error(g.fehler);
+  glossar = { begriffe: g.begriffe || [], sprecher: g.sprecher || [] };
+  return glossar;
+}
+
+$("#btn-glossar-speichern").addEventListener("click", async () => {
+  const btn = $("#btn-glossar-speichern");
+  btn.disabled = true;
+  try {
+    await glossarSpeichern($("#g-begriffe").value, $("#g-sprecher").value);
+    toast(`Glossar gespeichert (${glossar.begriffe.length} Begriffe).`);
+  } catch (e) {
+    toast("Glossar: " + e.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 // ---------- Verlauf ----------
 

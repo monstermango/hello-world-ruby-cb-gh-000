@@ -496,6 +496,124 @@ def _speichern(md_text, zeitpunkt):
     return pfad
 
 
+# ---------- Glossar ----------
+# Wiederkehrende Begriffe und Sprechernamen liegen im selben privaten
+# Dataset. Sie werden bei jeder Analyse als Vorwissen an die Erkennung
+# gegeben, damit Eigennamen und Fachbegriffe über Aufnahmen hinweg besser
+# getroffen werden.
+
+GLOSSAR_DATEI = "glossar.md"
+_glossar_cache = {"zeit": 0.0, "daten": None}
+GLOSSAR_TTL = 60.0
+
+# Häufige groß geschriebene Wörter, die als Vorschlag nichts bringen
+HAEUFIG = {
+    "Ich", "Du", "Er", "Sie", "Es", "Wir", "Ihr", "Der", "Die", "Das", "Den",
+    "Dem", "Ein", "Eine", "Einen", "Einem", "Und", "Aber", "Oder", "Also",
+    "Dann", "Doch", "Noch", "Nur", "Schon", "Ja", "Nein", "Genau", "Okay",
+    "Was", "Wie", "Wer", "Wo", "Wann", "Warum", "Weil", "Wenn", "Dass",
+    "Hier", "Da", "Dort", "Jetzt", "Mal", "Ganz", "Sehr", "Mehr", "Gut",
+    "Herr", "Frau", "Vielen", "Dank", "Hallo", "Tag", "Zeit", "Sache",
+}
+
+
+def _glossar_laden(frisch=False):
+    jetzt = time.time()
+    if (not frisch and _glossar_cache["daten"] is not None
+            and jetzt - _glossar_cache["zeit"] < GLOSSAR_TTL):
+        return _glossar_cache["daten"]
+    daten = {"begriffe": [], "sprecher": []}
+    try:
+        pfad = hf_hub_download(DATEN_REPO, GLOSSAR_DATEI, repo_type="dataset",
+                               token=HF_TOKEN, force_download=frisch)
+        abschnitt = None
+        with open(pfad, encoding="utf-8") as fh:
+            for zeile in fh:
+                z = zeile.strip()
+                if z.lower().startswith("## sprecher"):
+                    abschnitt = "sprecher"
+                elif z.startswith("## "):
+                    abschnitt = "begriffe"
+                elif z.startswith("- ") and abschnitt:
+                    wert = z[2:].strip()
+                    if wert and wert not in daten[abschnitt]:
+                        daten[abschnitt].append(wert)
+    except Exception:
+        pass
+    _glossar_cache.update(zeit=jetzt, daten=daten)
+    return daten
+
+
+def _glossar_speichern(begriffe, sprecher):
+    zeilen = ["# Glossar", "",
+              "Wird bei jeder Analyse als Vorwissen an die Erkennung gegeben.",
+              "", "## Begriffe", ""]
+    zeilen += [f"- {b}" for b in begriffe]
+    zeilen += ["", "## Sprecher", ""]
+    zeilen += [f"- {s}" for s in sprecher]
+    text = "\n".join(zeilen) + "\n"
+    api.upload_file(path_or_fileobj=text.encode("utf-8"),
+                    path_in_repo=GLOSSAR_DATEI, repo_id=DATEN_REPO,
+                    repo_type="dataset", commit_message="Glossar aktualisiert")
+    _glossar_cache.update(zeit=time.time(),
+                          daten={"begriffe": begriffe, "sprecher": sprecher})
+
+
+def _kontext_bauen(eigener, glossar, grenze=380):
+    """Baut den Erkennungs-Hinweis; das Modell verarbeitet nur wenig Text."""
+    teile = []
+    for wert in ([eigener] if eigener else []) + glossar["sprecher"] + glossar["begriffe"]:
+        wert = wert.strip()
+        if wert and wert not in teile:
+            teile.append(wert)
+    ergebnis = ""
+    for teil in teile:
+        kandidat = (ergebnis + ", " + teil) if ergebnis else teil
+        if len(kandidat) > grenze:
+            break
+        ergebnis = kandidat
+    return ergebnis
+
+
+def _begriffe_vorschlagen(segmente, bekannt):
+    """Schlägt wiederkehrende Eigennamen und Fachbegriffe aus dem Text vor."""
+    haeufigkeit = {}
+    for s in segmente:
+        for wort in re.findall(r"\b[A-ZÄÖÜ][\wÄÖÜäöüß-]{3,}\b", s.get("text") or ""):
+            if wort in HAEUFIG or wort in bekannt:
+                continue
+            haeufigkeit[wort] = haeufigkeit.get(wort, 0) + 1
+    kandidaten = [w for w, n in haeufigkeit.items() if n >= 2]
+    kandidaten.sort(key=lambda w: -haeufigkeit[w])
+    return kandidaten[:12]
+
+
+def glossar_api(key):
+    if not _pruefe(key):
+        return {"ok": False, "fehler": "Ungültiger Zugangsschlüssel."}
+    g = _glossar_laden(frisch=True)
+    return {"ok": True, **g}
+
+
+def glossar_speichern_api(key, begriffe_text, sprecher_text):
+    if not _pruefe(key):
+        return {"ok": False, "fehler": "Ungültiger Zugangsschlüssel."}
+    def zerlegen(t):
+        roh = re.split(r"[\n,;]+", t or "")
+        raus = []
+        for w in roh:
+            w = w.strip(" -\t")
+            if w and w not in raus:
+                raus.append(w)
+        return raus[:300]
+    begriffe, sprecher = zerlegen(begriffe_text), zerlegen(sprecher_text)
+    try:
+        _glossar_speichern(begriffe, sprecher)
+    except Exception as e:
+        return {"ok": False, "fehler": f"Speichern fehlgeschlagen: {e}"}
+    return {"ok": True, "begriffe": begriffe, "sprecher": sprecher}
+
+
 def _frontmatter(text):
     if text.startswith("---"):
         try:
@@ -561,7 +679,8 @@ def vorbereiten_api(key, audio, transkript=None, kontext=None):
     SITZUNGEN[sid] = {"wav": wav, "quelle": quelle, "zeit": time.time(),
                       "dauer": loader.get_duration(wav), "chunks": [],
                       "worte": worte, "fa_zeit": 0.0, "fa_wort": 0,
-                      "kontext": (kontext or "").strip()}
+                      "kontext": _kontext_bauen((kontext or "").strip(),
+                                                _glossar_laden())}
     return {"ok": True, "id": sid, "dauer": round(SITZUNGEN[sid]["dauer"], 1),
             "modus": "transkript" if worte else "erkennung",
             "woerter": len(worte)}
@@ -645,9 +764,13 @@ def abschliessen_api(key, sid):
                             s["chunks"], s["dauer"], s.get("sprache"))
     zeitpunkt = datetime.now(ZEITZONE)
     namen, farben = _namen_farben(daten["stats"])
+    glossar = _glossar_laden()
+    bekannt = set(glossar["begriffe"]) | set(glossar["sprecher"])
     return {"ok": True, "daten": daten, "namen": namen, "farben": farben,
             "zeitpunkt": zeitpunkt.isoformat(timespec="seconds"),
-            "quelle": s["quelle"], "sprache": daten.get("sprache")}
+            "quelle": s["quelle"], "sprache": daten.get("sprache"),
+            "vorschlaege": _begriffe_vorschlagen(daten["segmente"], bekannt),
+            "sprecher_bekannt": glossar["sprecher"]}
 
 
 def analysieren_api(key, audio, num_speakers, sprache=None, transkript=None,
@@ -688,6 +811,16 @@ def speichern_api(key, analyse, namen):
         pfad = _speichern(md_text, zeitpunkt)
     except Exception as e:
         return {"ok": False, "fehler": f"Speichern fehlgeschlagen: {e}"}
+
+    # Vergebene Sprechernamen fürs nächste Mal merken
+    if eigene:
+        g = _glossar_laden(frisch=True)
+        neue = [n for n in eigene.values() if n not in g["sprecher"]]
+        if neue:
+            try:
+                _glossar_speichern(g["begriffe"], g["sprecher"] + neue)
+            except Exception:
+                pass
     return {"ok": True, "pfad": pfad, "markdown": md_text}
 
 
@@ -730,6 +863,14 @@ with gr.Blocks(title="Sprecher-Analyse API") as demo:
     key = gr.Textbox(label="Zugangsschlüssel", type="password")
     gr.Button("Status prüfen").click(status_api, [key], gr.JSON(),
                                      api_name="status")
+    with gr.Accordion("Glossar", open=False):
+        g_begriffe = gr.Textbox(label="Begriffe (je Zeile einer)", lines=4)
+        g_sprecher = gr.Textbox(label="Sprechernamen (je Zeile einer)", lines=3)
+        gr.Button("Glossar laden").click(glossar_api, [key], gr.JSON(),
+                                         api_name="glossar")
+        gr.Button("Glossar speichern").click(
+            glossar_speichern_api, [key, g_begriffe, g_sprecher], gr.JSON(),
+            api_name="glossar_speichern")
     with gr.Tab("Analyse"):
         audio = gr.Audio(sources=["upload", "microphone"], type="filepath",
                          label="Audio")

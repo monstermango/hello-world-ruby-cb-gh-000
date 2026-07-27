@@ -100,6 +100,25 @@
     <div id="ergebnis"></div>
   </section>
 
+  <!-- Glossar -->
+  <section id="view-glossar" class="view" hidden>
+    <div class="card">
+      <p class="dim klein">Diese Begriffe bekommt die Erkennung bei jeder
+        Analyse als Vorwissen mit — so werden Namen und Fachbegriffe von
+        Aufnahme zu Aufnahme zuverlässiger getroffen. Alles bleibt in deinem
+        privaten Speicher.</p>
+      <label class="opt-block">
+        <span>Begriffe (je Zeile einer)</span>
+        <textarea id="g-begriffe" rows="8"></textarea>
+      </label>
+      <label class="opt-block">
+        <span>Sprechernamen</span>
+        <textarea id="g-sprecher" rows="4"></textarea>
+      </label>
+      <button id="btn-glossar-speichern" class="primary">Glossar speichern</button>
+    </div>
+  </section>
+
   <!-- Verlauf -->
   <section id="view-verlauf" class="view" hidden>
     <div id="verlauf-liste"></div>
@@ -114,6 +133,9 @@
 <nav class="tabbar">
   <button data-view="analyse" class="tab active">
     <span class="tab-icon">🎙️</span><span>Analyse</span>
+  </button>
+  <button data-view="glossar" class="tab">
+    <span class="tab-icon">📖</span><span>Glossar</span>
   </button>
   <button data-view="verlauf" class="tab">
     <span class="tab-icon">📋</span><span>Verlauf</span>
