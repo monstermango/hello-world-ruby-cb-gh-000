@@ -445,13 +445,22 @@ function ergebnisAnzeigen(d, gespeichert) {
   const zeitleiste = `<div class="sa-timeline">${lanes}` +
     `<div class="sa-ticks"><span>0:00</span><span>${zeit(dauer)}</span></div></div>`;
 
+  const markiert = daten.segmente.filter((s) => s.geaendert).length;
   let gespraech = `<div class="sa-h">Gespräch</div>`;
+  if (markiert) {
+    gespraech +=
+      `<div class="dim klein">⚠︎ ${markiert === 1 ? "eine Stelle weicht" :
+        markiert + " Stellen weichen"} stark vom Erkannten ab — antippen ` +
+      `zeigt den Originalwortlaut.</div>`;
+  }
   for (const s of daten.segmente) {
     if (!s.text) continue;
+    const zeichen = s.geaendert
+      ? ` <button class="marke" data-roh="${esc(s.roh || "")}">⚠︎</button>` : "";
     gespraech +=
       `<div class="sa-msg"><div class="sa-rail" style="background:${farben[s.label]}"></div>` +
       `<div class="sa-msg-body"><div class="sa-msg-head">${esc(namen[s.label])} · ` +
-      `${zeit(s.start)}–${zeit(s.ende)}</div>` +
+      `${zeit(s.start)}–${zeit(s.ende)}${zeichen}</div>` +
       `<div class="sa-bubble">${esc(s.text)}</div></div></div>`;
   }
 
@@ -497,6 +506,21 @@ function ergebnisAnzeigen(d, gespeichert) {
     `<div class="card">${meta}<div class="sa-bar">${balken}</div>` +
     `<div class="sa-legs">${legende}</div>${zeitleiste}${gespraech}${hinweis}` +
     `${abschluss}</div>`;
+
+  document.querySelectorAll(".marke").forEach((b) => {
+    b.addEventListener("click", () => {
+      const blase = b.closest(".sa-msg-body").querySelector(".sa-bubble");
+      let roh = blase.nextElementSibling;
+      if (roh && roh.classList.contains("roh")) {
+        roh.remove();
+        return;
+      }
+      roh = document.createElement("div");
+      roh.className = "roh";
+      roh.textContent = "Erkannt: " + b.dataset.roh;
+      blase.after(roh);
+    });
+  });
 
   if (gespeichert) {
     $("#btn-md-laden").addEventListener("click", () => mdHerunterladen());

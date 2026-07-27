@@ -151,6 +151,10 @@ summary { min-height: 44px; display: flex; align-items: center; color: var(--dim
   border-radius: 12px; overflow-wrap: anywhere }
 .sa-warn { margin-top: 14px; padding: 10px 14px; border-radius: 10px;
   background: var(--warn-bg); font-size: .9rem }
+.marke { padding: 2px 7px; border-radius: 8px; background: var(--warn-bg);
+  font-size: .8rem; line-height: 1.4 }
+.roh { margin-top: 6px; padding: 8px 12px; border-radius: 10px;
+  background: var(--warn-bg); font-size: .88rem; overflow-wrap: anywhere }
 .md-aktionen { margin-top: 16px }
 .namen-zeile { margin: 10px 0 }
 .punkt { width: 14px; height: 14px; border-radius: 50%; flex: 0 0 14px }

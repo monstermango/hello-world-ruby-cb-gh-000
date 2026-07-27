@@ -5,6 +5,7 @@ hier registrierten API-Endpunkte an. Jeder Endpunkt verlangt den
 Zugangsschlüssel (Secret APP_PASS); erst nach der Prüfung wird GPU-Zeit
 verbraucht.
 """
+import difflib
 import os
 import re
 import secrets
@@ -438,12 +439,16 @@ def _sitzung(sid):
 def _markdown(daten, quelle, zeitpunkt, namen=None):
     std_namen, _ = _namen_farben(daten["stats"])
     namen = {**std_namen, **(namen or {})}
+    geglaettet = [s for s in daten["segmente"] if s.get("roh")]
+    markiert = [s for s in geglaettet if s.get("geaendert")]
     frontmatter = {
         "titel": f"Aufnahme {zeitpunkt:%Y-%m-%d %H:%M}",
         "datum": zeitpunkt.isoformat(timespec="seconds"),
         "dauer_s": daten["dauer"],
         "sprecher": len(daten["stats"]),
         "sprache": daten.get("sprache"),
+        "geglaettet": bool(geglaettet),
+        "stark_geaendert": len(markiert),
         "quelle": quelle,
         "redeanteile_s": {namen[lb]: st["dauer"]
                           for lb, st in daten["stats"].items()},
@@ -462,10 +467,27 @@ def _markdown(daten, quelle, zeitpunkt, namen=None):
                   f"| {100 * st['dauer'] / gesamt:.0f} % | {st['turns']} |")
 
     md += ["", "## Protokoll", ""]
+    if markiert:
+        anzahl = (f"{len(markiert)} Stellen" if len(markiert) != 1
+                  else "eine Stelle")
+        md += [f"> ⚠︎ markiert {anzahl}, an denen die Überarbeitung stark "
+               "vom Erkannten abweicht. Der Originalwortlaut steht unter "
+               "„Rohtranskript“.", ""]
     for s in daten["segmente"]:
         if s["text"]:
+            zeichen = " ⚠︎" if s.get("geaendert") else ""
             md.append(f"**{namen[s['label']]}** "
-                      f"({_zeit(s['start'])}–{_zeit(s['ende'])}): {s['text']}")
+                      f"({_zeit(s['start'])}–{_zeit(s['ende'])}){zeichen}: "
+                      f"{s['text']}")
+            md.append("")
+
+    if geglaettet:
+        md += ["## Rohtranskript", "",
+               "Unbearbeitete Ausgabe der Spracherkennung, vor dem Glätten.",
+               ""]
+        for s in geglaettet:
+            md.append(f"**{namen[s['label']]}** "
+                      f"({_zeit(s['start'])}–{_zeit(s['ende'])}): {s['roh']}")
             md.append("")
 
     md += ["## Segmente", "", "| Start | Ende | Sprecher |", "|---|---|---|"]
@@ -710,6 +732,14 @@ def _korrigiere_gpu(zeilen, begriffe):
 _llm_laden()
 
 
+def _stark_geaendert(alt, neu):
+    """Hat das Glätten mehr als Feinschliff gemacht?"""
+    a, b = (alt or "").split(), (neu or "").split()
+    if not a or not b:
+        return False
+    return difflib.SequenceMatcher(None, a, b).ratio() < 0.75
+
+
 def _korr_bloecke(segmente):
     bloecke, aktuell, worte = [], [], 0
     for i, s in enumerate(segmente):
@@ -923,6 +953,8 @@ def glaetten_api(key, sid, index=0):
         return {"ok": True, "weiter": False, "abschnitte": len(s["korr_bloecke"])}
     block = s["korr_bloecke"][i]
     zeilen = [daten["segmente"][j]["text"] for j in block]
+    for j in block:                       # Rohfassung sichern
+        daten["segmente"][j].setdefault("roh", daten["segmente"][j]["text"])
     begriffe = _glossar_laden()["begriffe"][:GLOSSAR_PROMPT]
     eigene = [w.strip() for w in re.split(r"[,;\n]+", s.get("kontext", ""))
               if w.strip()]
@@ -930,7 +962,9 @@ def glaetten_api(key, sid, index=0):
         neu = _korrigiere_gpu(zeilen, eigene + [b for b in begriffe
                                                 if b not in eigene])
         for j, t in zip(block, neu):
-            daten["segmente"][j]["text"] = t
+            seg = daten["segmente"][j]
+            seg["text"] = t
+            seg["geaendert"] = _stark_geaendert(seg["roh"], t)
     except Exception as e:
         traceback.print_exc()
         # Glätten ist Kür — der Rohtext bleibt in jedem Fall erhalten
