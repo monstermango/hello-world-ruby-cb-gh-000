@@ -43,14 +43,27 @@ diarizer = Pipeline.from_pretrained(
 )
 diarizer.to(torch.device("cuda"))
 
-# Volles large-v3 statt der Turbo-Variante: spürbar bessere Inhaltsqualität
-# bei realen Gesprächsaufnahmen.
-asr = hf_pipeline(
-    "automatic-speech-recognition",
-    model="openai/whisper-large-v3",
-    torch_dtype=torch.float16,
-    device="cuda",
-)
+# Auf Deutsch nachtrainiertes large-v3: bei deutschen Gesprächsaufnahmen
+# deutlich treffsicherer als das allgemeine Modell. Fällt bei anderen
+# Sprachen auf das Original zurück.
+ASR_MODELLE = {
+    "german": "primeline/whisper-large-v3-german",
+    "*": "openai/whisper-large-v3",
+}
+_asr_cache = {}
+
+
+def _asr_holen(sprache):
+    name = ASR_MODELLE.get(sprache or "", ASR_MODELLE["*"])
+    if name not in _asr_cache:
+        _asr_cache[name] = hf_pipeline(
+            "automatic-speech-recognition", model=name,
+            torch_dtype=torch.float16, device="cuda",
+        )
+    return _asr_cache[name]
+
+
+asr = _asr_holen("german")
 
 loader = Audio(sample_rate=16000, mono="downmix")
 
@@ -167,6 +180,7 @@ def _transkribiere_gpu(audio_path, start, ende, sprache=None, kontext=""):
     neu und kippt dabei gern mitten im Gespräch in eine englische
     Übersetzung.
     """
+    modell = _asr_holen(sprache)
     wellenform, sr = loader.crop(audio_path, Segment(start, ende), mode="pad")
     eingabe = {"array": wellenform.squeeze(0).numpy(), "sampling_rate": sr}
     # Strahlsuche statt gieriger Dekodierung und Kontext aus dem Vorlauf:
@@ -176,18 +190,18 @@ def _transkribiere_gpu(audio_path, start, ende, sprache=None, kontext=""):
         gk["language"] = sprache
     if kontext:
         try:
-            gk["prompt_ids"] = asr.tokenizer.get_prompt_ids(
-                kontext[:400], return_tensors="pt").to(asr.model.device)
+            gk["prompt_ids"] = modell.tokenizer.get_prompt_ids(
+                kontext[:400], return_tensors="pt").to(modell.model.device)
             gk["prompt_condition_type"] = "first-segment"
         except Exception:
             gk.pop("prompt_ids", None)
     try:
-        res = asr(eingabe, return_timestamps=True, generate_kwargs=gk,
-                  return_language=not sprache)
+        res = modell(eingabe, return_timestamps=True, generate_kwargs=gk,
+                     return_language=not sprache)
     except (TypeError, ValueError):
         gk.pop("prompt_ids", None)
         gk.pop("prompt_condition_type", None)
-        res = asr(eingabe, return_timestamps=True, generate_kwargs=gk)
+        res = modell(eingabe, return_timestamps=True, generate_kwargs=gk)
 
     sprache_erkannt = None
     worte = []
