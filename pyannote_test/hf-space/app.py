@@ -214,8 +214,19 @@ def _transkribiere_gpu(audio_path, start, ende, sprache=None, kontext=""):
         bis = ts[1] if ts[1] is not None else ts[0] + 30.0
         worte += _worte_einpassen(audio_path, text, float(ts[0]) + start,
                                   float(bis) + start, ende)
+    if not worte:
+        # Manche Modelle (etwa deutsche Feinabstimmungen) liefern keine
+        # Zeitmarken. Dann den gesamten Text des Fensters selbst verorten.
+        alle = (res.get("text") or "").strip().split()
+        if alle:
+            rate = len(alle) / max(ende - start, 1.0)
+            treffer, _, _ = _aligniere_bereich(audio_path, alle, start, ende,
+                                               rate, schluss=True)
+            worte = [{"start": a, "ende": b, "text": alle[nr], "sprache": None}
+                     for nr, a, b in treffer]
+
     for w in worte:
-        w["sprache"] = sprache_erkannt
+        w["sprache"] = sprache_erkannt or sprache
     return worte
 
 
@@ -281,21 +292,17 @@ def _align_fenster(audio_path, worte, start, ende):
     return ergebnis
 
 
-def _fa_dauer(audio_path, worte, start, block_ende, rate, gesamt):
-    return int(min(120, max(30, 20 + (block_ende - start) / 10)))
+def _aligniere_bereich(audio_path, worte, start, ende, rate, schluss):
+    """Verteilt eine Wortliste über einen Zeitbereich, Fenster für Fenster.
 
-
-@spaces.GPU(duration=_fa_dauer)
-def _align_gpu(audio_path, worte, start, block_ende, rate, gesamt):
-    """Passt Wörter fortlaufend in einen Audioblock ein.
-
-    Mehrere Fenster je GPU-Aufruf, damit lange Aufnahmen nicht in sehr
-    viele Einzelanfragen zerfallen.
+    `schluss` gibt an, ob das Bereichsende zugleich das Ende des Materials
+    ist — nur dann muss der verbleibende Text vollständig untergebracht
+    werden.
     """
     treffer_gesamt, zeit, wi = [], start, 0
-    while wi < len(worte) and zeit < block_ende - 0.5:
-        fenster_ende = min(block_ende, zeit + FA_FENSTER)
-        if fenster_ende >= gesamt - 0.5:
+    while wi < len(worte) and zeit < ende - 0.5:
+        fenster_ende = min(ende, zeit + FA_FENSTER)
+        if schluss and fenster_ende >= ende - 0.5:
             nehmen = len(worte) - wi          # Rest muss vollständig hinein
         else:
             nehmen = max(3, int((fenster_ende - zeit) * rate * FA_ANTEIL))
@@ -309,6 +316,21 @@ def _align_gpu(audio_path, worte, start, block_ende, rate, gesamt):
         wi += treffer[-1][0] + 1
         zeit = max(treffer[-1][2], zeit + 1.0)
     return treffer_gesamt, zeit, wi
+
+
+def _fa_dauer(audio_path, worte, start, block_ende, rate, gesamt):
+    return int(min(120, max(30, 20 + (block_ende - start) / 10)))
+
+
+@spaces.GPU(duration=_fa_dauer)
+def _align_gpu(audio_path, worte, start, block_ende, rate, gesamt):
+    """Passt Wörter fortlaufend in einen Audioblock ein.
+
+    Mehrere Fenster je GPU-Aufruf, damit lange Aufnahmen nicht in sehr
+    viele Einzelanfragen zerfallen.
+    """
+    return _aligniere_bereich(audio_path, worte, start, block_ende, rate,
+                              schluss=block_ende >= gesamt - 0.5)
 
 
 def _align_schritt(s):
