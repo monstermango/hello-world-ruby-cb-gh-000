@@ -185,22 +185,16 @@ def _transkribiere_gpu(audio_path, start, ende, sprache=None, kontext=""):
     eingabe = {"array": wellenform.squeeze(0).numpy(), "sampling_rate": sr}
     # Strahlsuche statt gieriger Dekodierung und Kontext aus dem Vorlauf:
     # beides hebt die Trefferquote bei schwierigen Aufnahmen deutlich.
+    # Bewusst ohne prompt_ids: ein Vorwissen-Prompt bringt die Langform-
+    # Dekodierung zum Verstummen. Das Glossar wirkt stattdessen beim
+    # Glätten, wo es ohnehin zuverlässiger greift.
     gk = {"task": "transcribe", "num_beams": 2, "condition_on_prev_tokens": True}
     if sprache:
         gk["language"] = sprache
-    if kontext:
-        try:
-            gk["prompt_ids"] = modell.tokenizer.get_prompt_ids(
-                kontext[:400], return_tensors="pt").to(modell.model.device)
-            gk["prompt_condition_type"] = "first-segment"
-        except Exception:
-            gk.pop("prompt_ids", None)
     try:
         res = modell(eingabe, return_timestamps=True, generate_kwargs=gk,
                      return_language=not sprache)
     except (TypeError, ValueError):
-        gk.pop("prompt_ids", None)
-        gk.pop("prompt_condition_type", None)
         res = modell(eingabe, return_timestamps=True, generate_kwargs=gk)
 
     sprache_erkannt = None
@@ -639,7 +633,10 @@ def _begriffe_zaehlen(segmente):
 # Ein Sprachmodell glättet sie mit normalem Sprachgefühl — bewusst eng
 # geführt, damit es nichts hinzuerfindet.
 
-LLM_NAME = "Qwen/Qwen2.5-7B-Instruct"
+# Bewusst ein kleineres Modell: es muss neben Erkennung und Alignment in
+# den Grafikspeicher passen und wird beim Start geladen, damit der erste
+# Aufruf nicht am Herunterladen scheitert.
+LLM_NAME = "Qwen/Qwen2.5-3B-Instruct"
 _llm_cache = {}
 KORR_ZEILEN = 40           # Zeilen je Durchgang
 KORR_WORTE = 500           # Wörter je Durchgang
@@ -657,13 +654,14 @@ SYSTEM_PROMPT = (
 
 
 def _llm_holen():
-    if not _llm_cache:
-        from transformers import AutoModelForCausalLM, AutoTokenizer
-        tok = AutoTokenizer.from_pretrained(LLM_NAME)
-        mod = AutoModelForCausalLM.from_pretrained(
-            LLM_NAME, torch_dtype=torch.bfloat16).to("cuda").eval()
-        _llm_cache.update(modell=mod, tokenizer=tok)
     return _llm_cache["modell"], _llm_cache["tokenizer"]
+
+
+def _llm_laden():
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    _llm_cache["tokenizer"] = AutoTokenizer.from_pretrained(LLM_NAME)
+    _llm_cache["modell"] = AutoModelForCausalLM.from_pretrained(
+        LLM_NAME, torch_dtype=torch.bfloat16).to("cuda").eval()
 
 
 def _korr_dauer(zeilen, begriffe):
@@ -707,6 +705,9 @@ def _korrigiere_gpu(zeilen, begriffe):
                 continue
         ergebnis.append(alt)
     return ergebnis
+
+
+_llm_laden()
 
 
 def _korr_bloecke(segmente):
@@ -922,8 +923,12 @@ def glaetten_api(key, sid, index=0):
         return {"ok": True, "weiter": False, "abschnitte": len(s["korr_bloecke"])}
     block = s["korr_bloecke"][i]
     zeilen = [daten["segmente"][j]["text"] for j in block]
+    begriffe = _glossar_laden()["begriffe"][:GLOSSAR_PROMPT]
+    eigene = [w.strip() for w in re.split(r"[,;\n]+", s.get("kontext", ""))
+              if w.strip()]
     try:
-        neu = _korrigiere_gpu(zeilen, _glossar_laden()["begriffe"][:GLOSSAR_PROMPT])
+        neu = _korrigiere_gpu(zeilen, eigene + [b for b in begriffe
+                                                if b not in eigene])
         for j, t in zip(block, neu):
             daten["segmente"][j]["text"] = t
     except Exception as e:
