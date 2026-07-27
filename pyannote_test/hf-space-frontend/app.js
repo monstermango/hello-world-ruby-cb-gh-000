@@ -291,6 +291,19 @@ async function abschnitteVerarbeiten(id, abschnitte, eigenerText, ab, melde) {
   }
 }
 
+// Zweiter Durchgang: ein Sprachmodell glättet Hörfehler und Grammatik.
+async function textGlaetten(id, melde) {
+  for (let i = 0; ; i++) {
+    const gl = await rufeHartnaeckig("/glaetten", [schluessel, id, i]);
+    if (!gl.ok) throw new Error(gl.fehler);
+    melde(gl.abschnitte > 1
+      ? `Überarbeite Text — Abschnitt ${Math.min(i + 1, gl.abschnitte)} von ${gl.abschnitte} …`
+      : "Überarbeite Text …");
+    laufSpeichern({ id, phase: "glaetten", i: i + 1 });
+    if (!gl.weiter) break;
+  }
+}
+
 async function analyseRahmen(arbeit) {
   $("#btn-analyse").disabled = true;
   $("#fortsetzen").hidden = true;
@@ -350,6 +363,7 @@ $("#btn-analyse").addEventListener("click", () => {
     laufSpeichern({ id: vor.id, i: 0, abschnitte: dia.abschnitte, eigenerText });
 
     await abschnitteVerarbeiten(vor.id, dia.abschnitte, eigenerText, 0, melde);
+    await textGlaetten(vor.id, melde);
     melde("Stelle Ergebnis zusammen …");
     return await rufeHartnaeckig("/abschliessen", [schluessel, vor.id]);
   });
@@ -379,8 +393,11 @@ $("#btn-fortsetzen").addEventListener("click", () => {
       lauf.abschnitte = dia.abschnitte;
       lauf.i = 0;
     }
-    await abschnitteVerarbeiten(lauf.id, lauf.abschnitte, lauf.eigenerText,
-                                lauf.i, melde);
+    if (lauf.phase !== "glaetten") {
+      await abschnitteVerarbeiten(lauf.id, lauf.abschnitte, lauf.eigenerText,
+                                  lauf.i, melde);
+    }
+    await textGlaetten(lauf.id, melde);
     melde("Stelle Ergebnis zusammen …");
     return await rufeHartnaeckig("/abschliessen", [schluessel, lauf.id]);
   });
@@ -469,21 +486,10 @@ function ergebnisAnzeigen(d, gespeichert) {
         `placeholder="${esc(namen[lb])}" autocomplete="off"></label>`;
     }
 
-    let vorschlaege = "";
-    if ((d.vorschlaege || []).length) {
-      vorschlaege =
-        `<div class="sa-h">Begriffe fürs Glossar</div>` +
-        `<div class="dim">Antippen übernimmt sie dauerhaft — künftige ` +
-        `Aufnahmen werden dadurch treffsicherer.</div><div id="vorschlaege">` +
-        d.vorschlaege.map((w) =>
-          `<button class="vorschlag" data-wort="${esc(w)}">+ ${esc(w)}</button>`
-        ).join("") + `</div>`;
-    }
-
     abschluss =
       `<div class="sa-h">Sprecher benennen</div>` +
       `<div class="dim">Optional — leere Felder behalten den Standardnamen.</div>` +
-      felder + vorschlaege +
+      felder +
       `<button id="btn-speichern" class="primary">Als Markdown speichern</button>`;
   }
 
@@ -513,20 +519,6 @@ function ergebnisAnzeigen(d, gespeichert) {
     }
   } else {
     $("#btn-speichern").addEventListener("click", speichern);
-    document.querySelectorAll(".vorschlag").forEach((b) => {
-      b.addEventListener("click", async () => {
-        if (b.classList.contains("drin")) return;
-        b.classList.add("drin");
-        try {
-          const neu = [...glossar.begriffe, b.dataset.wort];
-          await glossarSpeichern(neu.join("\n"), glossar.sprecher.join("\n"));
-          toast(`„${b.dataset.wort}" ins Glossar übernommen.`);
-        } catch (e) {
-          b.classList.remove("drin");
-          toast("Glossar: " + e.message);
-        }
-      });
-    });
   }
 }
 
@@ -569,8 +561,11 @@ async function glossarLaden() {
   try {
     const g = await rufe("/glossar", [schluessel]);
     if (!g.ok) throw new Error(g.fehler);
-    glossar = { begriffe: g.begriffe || [], sprecher: g.sprecher || [] };
-    $("#g-begriffe").value = glossar.begriffe.join("\n");
+    glossar = { begriffe: g.begriffe || [], sprecher: g.sprecher || [],
+                zaehler: g.zaehler || {} };
+    $("#g-begriffe").value = glossar.begriffe
+      .map((b) => (glossar.zaehler[b] ? `${b} (${glossar.zaehler[b]})` : b))
+      .join("\n");
     $("#g-sprecher").value = glossar.sprecher.join("\n");
   } catch (e) {
     toast("Glossar: " + e.message);

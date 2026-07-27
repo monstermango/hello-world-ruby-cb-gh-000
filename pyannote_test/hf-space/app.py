@@ -517,12 +517,17 @@ HAEUFIG = {
 }
 
 
+GLOSSAR_MAX = 250          # so viele Begriffe werden überhaupt behalten
+GLOSSAR_PROMPT = 40        # so viele der häufigsten gehen an die Erkennung
+
+
 def _glossar_laden(frisch=False):
+    """Begriffe mit Häufigkeit, absteigend sortiert."""
     jetzt = time.time()
     if (not frisch and _glossar_cache["daten"] is not None
             and jetzt - _glossar_cache["zeit"] < GLOSSAR_TTL):
         return _glossar_cache["daten"]
-    daten = {"begriffe": [], "sprecher": []}
+    zaehler, sprecher = {}, []
     try:
         pfad = hf_hub_download(DATEN_REPO, GLOSSAR_DATEI, repo_type="dataset",
                                token=HF_TOKEN, force_download=frisch)
@@ -536,33 +541,75 @@ def _glossar_laden(frisch=False):
                     abschnitt = "begriffe"
                 elif z.startswith("- ") and abschnitt:
                     wert = z[2:].strip()
-                    if wert and wert not in daten[abschnitt]:
-                        daten[abschnitt].append(wert)
+                    if not wert:
+                        continue
+                    if abschnitt == "sprecher":
+                        if wert not in sprecher:
+                            sprecher.append(wert)
+                    else:
+                        treffer = re.match(r"^(.*?)\s*\((\d+)\)$", wert)
+                        begriff = (treffer.group(1) if treffer else wert).strip()
+                        anzahl = int(treffer.group(2)) if treffer else 1
+                        if begriff:
+                            zaehler[begriff] = zaehler.get(begriff, 0) + anzahl
     except Exception:
         pass
+    daten = {"zaehler": zaehler, "sprecher": sprecher,
+             "begriffe": _rangfolge(zaehler)}
     _glossar_cache.update(zeit=jetzt, daten=daten)
     return daten
 
 
-def _glossar_speichern(begriffe, sprecher):
+def _rangfolge(zaehler):
+    """Häufigstes zuerst, bei Gleichstand alphabetisch."""
+    return [b for b, _ in sorted(zaehler.items(), key=lambda p: (-p[1], p[0]))]
+
+
+def _glossar_speichern(zaehler, sprecher):
+    geordnet = _rangfolge(zaehler)[:GLOSSAR_MAX]
     zeilen = ["# Glossar", "",
-              "Wird bei jeder Analyse als Vorwissen an die Erkennung gegeben.",
+              "Wird automatisch gepflegt und nach Häufigkeit sortiert; die",
+              "obersten Einträge gehen als Vorwissen an die Erkennung.",
               "", "## Begriffe", ""]
-    zeilen += [f"- {b}" for b in begriffe]
+    zeilen += [f"- {b} ({zaehler[b]})" for b in geordnet]
     zeilen += ["", "## Sprecher", ""]
     zeilen += [f"- {s}" for s in sprecher]
-    text = "\n".join(zeilen) + "\n"
-    api.upload_file(path_or_fileobj=text.encode("utf-8"),
+    api.upload_file(path_or_fileobj=("\n".join(zeilen) + "\n").encode("utf-8"),
                     path_in_repo=GLOSSAR_DATEI, repo_id=DATEN_REPO,
                     repo_type="dataset", commit_message="Glossar aktualisiert")
+    behalten = {b: zaehler[b] for b in geordnet}
     _glossar_cache.update(zeit=time.time(),
-                          daten={"begriffe": begriffe, "sprecher": sprecher})
+                          daten={"zaehler": behalten, "sprecher": sprecher,
+                                 "begriffe": geordnet})
+
+
+def _glossar_fortschreiben(segmente, sprechernamen):
+    """Zählt Begriffe des neuen Transkripts mit — ohne Zutun des Nutzers."""
+    try:
+        g = _glossar_laden(frisch=True)
+        zaehler = dict(g["zaehler"])
+        for wort, anzahl in _begriffe_zaehlen(segmente).items():
+            zaehler[wort] = zaehler.get(wort, 0) + anzahl
+        sprecher = list(g["sprecher"])
+        for name in sprechernamen:
+            if name and name not in sprecher:
+                sprecher.append(name)
+        _glossar_speichern(zaehler, sprecher)
+        return _glossar_laden()
+    except Exception:
+        traceback.print_exc()
+        return _glossar_laden()
 
 
 def _kontext_bauen(eigener, glossar, grenze=380):
-    """Baut den Erkennungs-Hinweis; das Modell verarbeitet nur wenig Text."""
+    """Baut den Erkennungs-Hinweis; das Modell verarbeitet nur wenig Text.
+
+    Die häufigsten Begriffe stehen vorn, damit bei knappem Platz das
+    Wichtigste ankommt.
+    """
     teile = []
-    for wert in ([eigener] if eigener else []) + glossar["sprecher"] + glossar["begriffe"]:
+    for wert in ([eigener] if eigener else []) + glossar["sprecher"] \
+            + glossar["begriffe"][:GLOSSAR_PROMPT]:
         wert = wert.strip()
         if wert and wert not in teile:
             teile.append(wert)
@@ -575,17 +622,107 @@ def _kontext_bauen(eigener, glossar, grenze=380):
     return ergebnis
 
 
-def _begriffe_vorschlagen(segmente, bekannt):
-    """Schlägt wiederkehrende Eigennamen und Fachbegriffe aus dem Text vor."""
+def _begriffe_zaehlen(segmente):
+    """Zählt wiederkehrende Eigennamen und Fachbegriffe im Transkript."""
     haeufigkeit = {}
     for s in segmente:
         for wort in re.findall(r"\b[A-ZÄÖÜ][\wÄÖÜäöüß-]{3,}\b", s.get("text") or ""):
-            if wort in HAEUFIG or wort in bekannt:
+            if wort in HAEUFIG:
                 continue
             haeufigkeit[wort] = haeufigkeit.get(wort, 0) + 1
-    kandidaten = [w for w, n in haeufigkeit.items() if n >= 2]
-    kandidaten.sort(key=lambda w: -haeufigkeit[w])
-    return kandidaten[:12]
+    # Einmalige Treffer sind meist Satzanfänge, nicht der Rede wert
+    return {w: n for w, n in haeufigkeit.items() if n >= 2}
+
+
+# ---------- Nachbearbeitung durch ein Sprachmodell ----------
+# Die Rohausgabe der Erkennung enthält Hörfehler und zerfaserte Sätze.
+# Ein Sprachmodell glättet sie mit normalem Sprachgefühl — bewusst eng
+# geführt, damit es nichts hinzuerfindet.
+
+LLM_NAME = "Qwen/Qwen2.5-7B-Instruct"
+_llm_cache = {}
+KORR_ZEILEN = 40           # Zeilen je Durchgang
+KORR_WORTE = 500           # Wörter je Durchgang
+
+SYSTEM_PROMPT = (
+    "Du überarbeitest ein automatisch erstelltes Gesprächsprotokoll.\n"
+    "Regeln:\n"
+    "- Korrigiere Hörfehler, Wortverdreher, Grammatik und Zeichensetzung.\n"
+    "- Verwende normalen, natürlichen Wortschatz.\n"
+    "- Erfinde nichts, lasse nichts weg, fasse nichts zusammen.\n"
+    "- Ändere den Sinn nicht; im Zweifel den Text unverändert lassen.\n"
+    "- Antworte mit exakt so vielen Zeilen wie in der Eingabe, jede Zeile\n"
+    "  im Format  «Nummer| Text».  Keine weiteren Erklärungen.\n"
+)
+
+
+def _llm_holen():
+    if not _llm_cache:
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+        tok = AutoTokenizer.from_pretrained(LLM_NAME)
+        mod = AutoModelForCausalLM.from_pretrained(
+            LLM_NAME, torch_dtype=torch.bfloat16).to("cuda").eval()
+        _llm_cache.update(modell=mod, tokenizer=tok)
+    return _llm_cache["modell"], _llm_cache["tokenizer"]
+
+
+def _korr_dauer(zeilen, begriffe):
+    worte = sum(len(z.split()) for z in zeilen)
+    return int(min(120, max(45, 30 + worte / 5)))
+
+
+@spaces.GPU(duration=_korr_dauer)
+def _korrigiere_gpu(zeilen, begriffe):
+    modell, tok = _llm_holen()
+    hinweis = ("\nBekannte Namen und Begriffe, die vorkommen können: "
+               + ", ".join(begriffe) + "\n") if begriffe else ""
+    eingabe = "\n".join(f"{i + 1}| {z}" for i, z in enumerate(zeilen))
+    nachrichten = [
+        {"role": "system", "content": SYSTEM_PROMPT + hinweis},
+        {"role": "user", "content": eingabe},
+    ]
+    text = tok.apply_chat_template(nachrichten, tokenize=False,
+                                   add_generation_prompt=True)
+    ids = tok([text], return_tensors="pt").to(modell.device)
+    grenze = int(ids.input_ids.shape[1] * 1.5) + 200
+    with torch.inference_mode():
+        aus = modell.generate(**ids, max_new_tokens=grenze, do_sample=False)
+    antwort = tok.decode(aus[0][ids.input_ids.shape[1]:], skip_special_tokens=True)
+
+    neu = {}
+    for zeile in antwort.splitlines():
+        treffer = re.match(r"^\s*(\d+)\s*\|\s*(.*\S)\s*$", zeile)
+        if treffer:
+            neu[int(treffer.group(1))] = treffer.group(2)
+
+    ergebnis = []
+    for i, alt in enumerate(zeilen):
+        kandidat = neu.get(i + 1)
+        # Schutz vor Auslassungen und Ausschmückungen: bei stark abweichender
+        # Länge lieber das Original behalten.
+        if kandidat:
+            v = len(kandidat.split()) / max(len(alt.split()), 1)
+            if 0.6 <= v <= 1.8:
+                ergebnis.append(kandidat)
+                continue
+        ergebnis.append(alt)
+    return ergebnis
+
+
+def _korr_bloecke(segmente):
+    bloecke, aktuell, worte = [], [], 0
+    for i, s in enumerate(segmente):
+        if not (s.get("text") or "").strip():
+            continue
+        n = len(s["text"].split())
+        if aktuell and (len(aktuell) >= KORR_ZEILEN or worte + n > KORR_WORTE):
+            bloecke.append(aktuell)
+            aktuell, worte = [], 0
+        aktuell.append(i)
+        worte += n
+    if aktuell:
+        bloecke.append(aktuell)
+    return bloecke
 
 
 def glossar_api(key):
@@ -596,22 +733,32 @@ def glossar_api(key):
 
 
 def glossar_speichern_api(key, begriffe_text, sprecher_text):
+    """Manuelles Nachbearbeiten; die Reihenfolge legt den Rang fest."""
     if not _pruefe(key):
         return {"ok": False, "fehler": "Ungültiger Zugangsschlüssel."}
+
     def zerlegen(t):
-        roh = re.split(r"[\n,;]+", t or "")
         raus = []
-        for w in roh:
-            w = w.strip(" -\t")
+        for w in re.split(r"[\n,;]+", t or ""):
+            w = re.sub(r"\s*\(\d+\)$", "", w.strip(" -\t")).strip()
             if w and w not in raus:
                 raus.append(w)
-        return raus[:300]
+        return raus[:GLOSSAR_MAX]
+
     begriffe, sprecher = zerlegen(begriffe_text), zerlegen(sprecher_text)
+    alt = _glossar_laden(frisch=True)["zaehler"]
+    # Vorhandene Häufigkeiten behalten, neue oben einsortieren
+    hoechster = max(alt.values(), default=1)
+    zaehler = {}
+    for rang, b in enumerate(begriffe):
+        zaehler[b] = alt.get(b, max(2, hoechster - rang))
     try:
-        _glossar_speichern(begriffe, sprecher)
+        _glossar_speichern(zaehler, sprecher)
     except Exception as e:
         return {"ok": False, "fehler": f"Speichern fehlgeschlagen: {e}"}
-    return {"ok": True, "begriffe": begriffe, "sprecher": sprecher}
+    g = _glossar_laden()
+    return {"ok": True, "begriffe": g["begriffe"], "sprecher": g["sprecher"],
+            "zaehler": g["zaehler"]}
 
 
 def _frontmatter(text):
@@ -753,23 +900,56 @@ def transkribieren_api(key, sid, index):
             "weiter": i + 1 < len(s["fenster"]) - 1}
 
 
-def abschliessen_api(key, sid):
-    """Schritt 4: Sprecher und Texte zusammenführen."""
+def _daten_sichern(s):
+    if "daten" not in s:
+        s["daten"] = _zusammenfuegen(s["turns"], s["stats"], s["overlaps"],
+                                     s["chunks"], s["dauer"], s.get("sprache"))
+        s["korr_bloecke"] = _korr_bloecke(s["daten"]["segmente"])
+        s["korr_i"] = 0
+    return s["daten"]
+
+
+def glaetten_api(key, sid, index=0):
+    """Schritt 4: Text mit Sprachgefühl glätten (blockweise)."""
     if not _pruefe(key):
         return {"ok": False, "fehler": "Ungültiger Zugangsschlüssel."}
     s = _sitzung(sid)
     if not s or "turns" not in s:
         return {"ok": False, "fehler": "Sitzung abgelaufen. Bitte erneut starten."}
-    daten = _zusammenfuegen(s["turns"], s["stats"], s["overlaps"],
-                            s["chunks"], s["dauer"], s.get("sprache"))
+    daten = _daten_sichern(s)
+    i = s["korr_i"]
+    if i >= len(s["korr_bloecke"]):
+        return {"ok": True, "weiter": False, "abschnitte": len(s["korr_bloecke"])}
+    block = s["korr_bloecke"][i]
+    zeilen = [daten["segmente"][j]["text"] for j in block]
+    try:
+        neu = _korrigiere_gpu(zeilen, _glossar_laden()["begriffe"][:GLOSSAR_PROMPT])
+        for j, t in zip(block, neu):
+            daten["segmente"][j]["text"] = t
+    except Exception as e:
+        traceback.print_exc()
+        # Glätten ist Kür — der Rohtext bleibt in jedem Fall erhalten
+        print(f"Glätten übersprungen: {type(e).__name__}: {e}")
+    s["korr_i"] = i + 1
+    return {"ok": True, "weiter": s["korr_i"] < len(s["korr_bloecke"]),
+            "abschnitte": len(s["korr_bloecke"]), "index": i}
+
+
+def abschliessen_api(key, sid):
+    """Schritt 5: Ergebnis ausliefern und das Glossar fortschreiben."""
+    if not _pruefe(key):
+        return {"ok": False, "fehler": "Ungültiger Zugangsschlüssel."}
+    s = _sitzung(sid)
+    if not s or "turns" not in s:
+        return {"ok": False, "fehler": "Sitzung abgelaufen. Bitte erneut starten."}
+    daten = _daten_sichern(s)
     zeitpunkt = datetime.now(ZEITZONE)
     namen, farben = _namen_farben(daten["stats"])
-    glossar = _glossar_laden()
-    bekannt = set(glossar["begriffe"]) | set(glossar["sprecher"])
+    glossar = _glossar_fortschreiben(daten["segmente"], [])
     return {"ok": True, "daten": daten, "namen": namen, "farben": farben,
             "zeitpunkt": zeitpunkt.isoformat(timespec="seconds"),
             "quelle": s["quelle"], "sprache": daten.get("sprache"),
-            "vorschlaege": _begriffe_vorschlagen(daten["segmente"], bekannt),
+            "glossar": glossar["begriffe"][:GLOSSAR_PROMPT],
             "sprecher_bekannt": glossar["sprecher"]}
 
 
@@ -791,6 +971,10 @@ def analysieren_api(key, audio, num_speakers, sprache=None, transkript=None,
         if not tr.get("weiter"):
             break
         i += 1
+    while True:
+        gl = glaetten_api(key, sid)
+        if not gl.get("ok") or not gl.get("weiter"):
+            break
     return abschliessen_api(key, sid)
 
 
@@ -812,15 +996,8 @@ def speichern_api(key, analyse, namen):
     except Exception as e:
         return {"ok": False, "fehler": f"Speichern fehlgeschlagen: {e}"}
 
-    # Vergebene Sprechernamen fürs nächste Mal merken
-    if eigene:
-        g = _glossar_laden(frisch=True)
-        neue = [n for n in eigene.values() if n not in g["sprecher"]]
-        if neue:
-            try:
-                _glossar_speichern(g["begriffe"], g["sprecher"] + neue)
-            except Exception:
-                pass
+    if eigene:                      # Sprechernamen fürs nächste Mal merken
+        _glossar_fortschreiben([], list(eigene.values()))
     return {"ok": True, "pfad": pfad, "markdown": md_text}
 
 
@@ -899,7 +1076,9 @@ with gr.Blocks(title="Sprecher-Analyse API") as demo:
         gr.Button("3 · Abschnitt transkribieren").click(
             transkribieren_api, [key, sid, idx], gr.JSON(),
             api_name="transkribieren")
-        gr.Button("4 · Abschließen").click(
+        gr.Button("4 · Glätten").click(
+            glaetten_api, [key, sid, idx], gr.JSON(), api_name="glaetten")
+        gr.Button("5 · Abschließen").click(
             abschliessen_api, [key, sid], gr.JSON(), api_name="abschliessen")
         analyse_json = gr.JSON(label="Analyse-Objekt (aus /analysieren)")
         namen_json = gr.JSON(label='Sprechernamen, z. B. {"SPEAKER_00": "Nils"}')
