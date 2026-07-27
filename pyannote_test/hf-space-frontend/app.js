@@ -84,6 +84,7 @@ async function loginPruefen(neuerKey) {
   $("#login").hidden = true;
   verlaufAnzeigen(antwort.eintraege);
   tokenStatusPruefen();
+  fortsetzenAnbieten();
 }
 
 // Fragt das Backend, ob die Anfragen mit HF-Token ankommen. Ohne Token läuft
@@ -241,58 +242,68 @@ function wakeLockFreigeben() {
 }
 
 document.addEventListener("visibilitychange", async () => {
-  if (document.visibilityState === "visible" && recorder
-      && recorder.state === "recording" && !wakeLock) {
+  const laeuft = (recorder && recorder.state === "recording")
+              || !$("#progress").hidden;
+  if (document.visibilityState === "visible" && laeuft && !wakeLock) {
     await wakeLockAnfordern();
   }
 });
 
 // ---------- Analyse ----------
 
-$("#btn-analyse").addEventListener("click", async () => {
-  if (!audioDatei) return;
+// Wiederholt einen Schritt, wenn die Verbindung abbricht — etwa weil iOS die
+// Seite beim Verdunkeln des Bildschirms eingefroren hat.
+async function rufeHartnaeckig(endpunkt, daten, versuche = 3) {
+  let letzter;
+  for (let v = 0; v < versuche; v++) {
+    try {
+      return await rufe(endpunkt, daten);
+    } catch (e) {
+      letzter = e;
+      client = null;
+      await new Promise((r) => setTimeout(r, 1500 * (v + 1)));
+    }
+  }
+  throw letzter;
+}
+
+function laufSpeichern(zustand) {
+  localStorage.setItem("sa_lauf", JSON.stringify({ ...zustand, ts: Date.now() }));
+}
+
+function laufLoeschen() {
+  localStorage.removeItem("sa_lauf");
+  $("#fortsetzen").hidden = true;
+}
+
+async function abschnitteVerarbeiten(id, abschnitte, eigenerText, ab, melde) {
+  for (let i = ab; ; i++) {
+    const was = eigenerText ? "Ordne Text zu" : "Transkribiere";
+    melde(abschnitte > 1
+      ? `${was} — Abschnitt ${Math.min(i + 1, abschnitte)} von ${abschnitte} …`
+      : `${was} …`);
+    const tr = await rufeHartnaeckig("/transkribieren", [schluessel, id, i]);
+    if (!tr.ok) throw new Error(tr.fehler);
+    laufSpeichern({ id, i: i + 1, abschnitte, eigenerText });
+    if (!tr.weiter) break;
+  }
+}
+
+async function analyseRahmen(arbeit) {
   $("#btn-analyse").disabled = true;
+  $("#fortsetzen").hidden = true;
   $("#progress").hidden = false;
-  $("#progress-text").textContent = "Lade Audio hoch …";
   $("#ergebnis").innerHTML = "";
   const start = Date.now();
   const ticker = setInterval(() => {
     $("#progress-zeit").textContent = zeit((Date.now() - start) / 1000);
   }, 1000);
+  await wakeLockAnfordern();          // Bildschirm an lassen
+  const melde = (t) => ($("#progress-text").textContent = t);
   try {
-    const n = parseInt($("#num-speakers").value, 10) || 0;
-    const melde = (t) => ($("#progress-text").textContent = t);
-
-    // Jeder Schritt ist eine eigene Anfrage: eine einzelne lange Anfrage
-    // würde das Zeitlimit der GPU-Zuteilung überschreiten.
-    melde("Lade Audio hoch …");
-    const transkript = $("#transkript").value.trim();
-    const kontext = $("#kontext").value.trim();
-    localStorage.setItem("sa_kontext", kontext);
-    const vor = await rufe("/vorbereiten",
-                           [schluessel, audioDatei, transkript, kontext]);
-    if (!vor.ok) throw new Error(vor.fehler);
-    const eigenerText = vor.modus === "transkript";
-
-    melde("Erkenne Sprecher …");
-    const spr = $("#sprache").value;
-    localStorage.setItem("sa_sprache", spr);
-    const dia = await rufe("/diarisieren", [schluessel, vor.id, n, spr]);
-    if (!dia.ok) throw new Error(dia.fehler);
-
-    for (let i = 0; ; i++) {
-      const was = eigenerText ? "Ordne Text zu" : "Transkribiere";
-      melde(dia.abschnitte > 1
-        ? `${was} — Abschnitt ${Math.min(i + 1, dia.abschnitte)} von ${dia.abschnitte} …`
-        : `${was} …`);
-      const tr = await rufe("/transkribieren", [schluessel, vor.id, i]);
-      if (!tr.ok) throw new Error(tr.fehler);
-      if (!tr.weiter) break;
-    }
-
-    melde("Stelle Ergebnis zusammen …");
-    const d = await rufe("/abschliessen", [schluessel, vor.id]);
+    const d = await arbeit(melde);
     if (!d.ok) throw new Error(d.fehler);
+    laufLoeschen();
     letzteAnalyse = d;
     ergebnisAnzeigen(d, false);
   } catch (e) {
@@ -302,11 +313,75 @@ $("#btn-analyse").addEventListener("click", async () => {
               + "läuft die GPU über dein Konto.";
     }
     toast("Fehler: " + e.message + hinweis);
+    fortsetzenAnbieten();
   } finally {
     clearInterval(ticker);
+    wakeLockFreigeben();
     $("#btn-analyse").disabled = false;
     $("#progress").hidden = true;
   }
+}
+
+$("#btn-analyse").addEventListener("click", () => {
+  if (!audioDatei) return;
+  analyseRahmen(async (melde) => {
+    const n = parseInt($("#num-speakers").value, 10) || 0;
+
+    // Jeder Schritt ist eine eigene Anfrage: eine einzelne lange Anfrage
+    // würde das Zeitlimit der GPU-Zuteilung überschreiten.
+    melde("Lade Audio hoch …");
+    const transkript = $("#transkript").value.trim();
+    const kontext = $("#kontext").value.trim();
+    localStorage.setItem("sa_kontext", kontext);
+    const vor = await rufeHartnaeckig(
+      "/vorbereiten", [schluessel, audioDatei, transkript, kontext]);
+    if (!vor.ok) throw new Error(vor.fehler);
+    const eigenerText = vor.modus === "transkript";
+    laufSpeichern({ id: vor.id, i: 0, abschnitte: null, eigenerText });
+
+    melde("Erkenne Sprecher …");
+    const spr = $("#sprache").value;
+    localStorage.setItem("sa_sprache", spr);
+    const dia = await rufeHartnaeckig("/diarisieren",
+                                      [schluessel, vor.id, n, spr]);
+    if (!dia.ok) throw new Error(dia.fehler);
+    laufSpeichern({ id: vor.id, i: 0, abschnitte: dia.abschnitte, eigenerText });
+
+    await abschnitteVerarbeiten(vor.id, dia.abschnitte, eigenerText, 0, melde);
+    melde("Stelle Ergebnis zusammen …");
+    return await rufeHartnaeckig("/abschliessen", [schluessel, vor.id]);
+  });
+});
+
+function fortsetzenAnbieten() {
+  let lauf;
+  try {
+    lauf = JSON.parse(localStorage.getItem("sa_lauf") || "null");
+  } catch (e) {
+    lauf = null;
+  }
+  if (!lauf || !lauf.id || Date.now() - lauf.ts > 2.5 * 3600 * 1000) return;
+  $("#fortsetzen").hidden = false;
+}
+
+$("#btn-fortsetzen").addEventListener("click", () => {
+  const lauf = JSON.parse(localStorage.getItem("sa_lauf") || "null");
+  if (!lauf) return;
+  analyseRahmen(async (melde) => {
+    if (lauf.abschnitte === null) {
+      melde("Erkenne Sprecher …");
+      const n = parseInt($("#num-speakers").value, 10) || 0;
+      const dia = await rufeHartnaeckig(
+        "/diarisieren", [schluessel, lauf.id, n, $("#sprache").value]);
+      if (!dia.ok) throw new Error(dia.fehler);
+      lauf.abschnitte = dia.abschnitte;
+      lauf.i = 0;
+    }
+    await abschnitteVerarbeiten(lauf.id, lauf.abschnitte, lauf.eigenerText,
+                                lauf.i, melde);
+    melde("Stelle Ergebnis zusammen …");
+    return await rufeHartnaeckig("/abschliessen", [schluessel, lauf.id]);
+  });
 });
 
 function ergebnisAnzeigen(d, gespeichert) {

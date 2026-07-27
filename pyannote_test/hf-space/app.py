@@ -587,7 +587,7 @@ def diarisieren_api(key, sid, num_speakers, sprache=None):
         except Exception:
             sprache = None
     s.update(turns=turns, stats=stats, overlaps=overlaps, chunks=[],
-             sprache=sprache, fa_zeit=0.0, fa_wort=0,
+             sprache=sprache, fa_zeit=0.0, fa_wort=0, fertig=set(),
              fenster=_fenstergrenzen(turns, s["dauer"]))
     abschnitte = (max(1, math.ceil(s["dauer"] / FA_FENSTER)) if s.get("worte")
                   else max(1, len(s["fenster"]) - 1))
@@ -617,6 +617,10 @@ def transkribieren_api(key, sid, index):
     i = int(index)
     if not 0 <= i < len(s["fenster"]) - 1:
         return {"ok": False, "fehler": "Ungültiger Abschnitt."}
+    if i in s.setdefault("fertig", set()):
+        # Bereits verarbeitet — Wiederholung nach Abbruch darf nichts doppeln
+        return {"ok": True, "index": i, "abschnitte": len(s["fenster"]) - 1,
+                "weiter": i + 1 < len(s["fenster"]) - 1}
     try:
         s["chunks"] += _transkribiere_gpu(s["wav"], s["fenster"][i],
                                           s["fenster"][i + 1],
@@ -625,6 +629,7 @@ def transkribieren_api(key, sid, index):
         traceback.print_exc()
         return {"ok": False,
                 "fehler": f"Transkription fehlgeschlagen: {type(e).__name__}: {e}"}
+    s["fertig"].add(i)
     return {"ok": True, "index": i, "abschnitte": len(s["fenster"]) - 1,
             "weiter": i + 1 < len(s["fenster"]) - 1}
 
