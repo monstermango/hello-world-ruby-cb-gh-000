@@ -96,6 +96,13 @@ summary { min-height: 44px; display: flex; align-items: center; color: var(--dim
   background: var(--bg); color: var(--text);
 }
 #transkript-info { margin-top: 6px }
+.opt-block { display: block; margin: 10px 0 }
+.opt-block input {
+  width: 100%; min-height: 44px; margin-top: 6px; padding: 0 12px;
+  font-size: 16px; font-family: inherit;
+  border: 1px solid var(--linie); border-radius: 10px;
+  background: var(--bg); color: var(--text);
+}
 .opt select {
   min-height: 44px; padding: 0 10px; font-size: 16px; font-family: inherit;
   border: 1px solid var(--linie); border-radius: 10px;

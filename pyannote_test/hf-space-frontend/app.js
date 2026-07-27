@@ -267,7 +267,10 @@ $("#btn-analyse").addEventListener("click", async () => {
     // würde das Zeitlimit der GPU-Zuteilung überschreiten.
     melde("Lade Audio hoch …");
     const transkript = $("#transkript").value.trim();
-    const vor = await rufe("/vorbereiten", [schluessel, audioDatei, transkript]);
+    const kontext = $("#kontext").value.trim();
+    localStorage.setItem("sa_kontext", kontext);
+    const vor = await rufe("/vorbereiten",
+                           [schluessel, audioDatei, transkript, kontext]);
     if (!vor.ok) throw new Error(vor.fehler);
     const eigenerText = vor.modus === "transkript";
 
@@ -535,6 +538,7 @@ $("#transkript").addEventListener("input", () => {
 const gemerkteSprache = localStorage.getItem("sa_sprache");
 if (gemerkteSprache !== null) $("#sprache").value = gemerkteSprache;
 $("#hf-input").value = hfToken;
+$("#kontext").value = localStorage.getItem("sa_kontext") || "";
 
 if (!schluessel) {
   $("#login").hidden = false;

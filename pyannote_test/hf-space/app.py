@@ -82,7 +82,7 @@ def _pruefe(key):
 # Lange Aufnahmen werden in Fenster zerlegt, damit jeder GPU-Aufruf innerhalb
 # des ZeroGPU-Limits bleibt. Die Diarization läuft trotzdem über die gesamte
 # Datei, sonst wären die Sprecher zwischen den Fenstern nicht dieselben.
-FENSTER = 600.0
+FENSTER = 300.0
 
 
 def _diar_dauer(audio_path, num_speakers):
@@ -128,12 +128,39 @@ def _sprache_gpu(audio_path, ab):
     return None
 
 
-def _asr_dauer(audio_path, start, ende, sprache=None):
-    return int(min(120, max(30, 20 + (ende - start) / 6)))
+def _worte_einpassen(audio_path, text, a, b, gesamt):
+    """Zerlegt einen erkannten Abschnitt in einzeln verortete Wörter.
+
+    Text und Audio des Abschnitts entsprechen einander exakt, deshalb ist
+    das Alignment hier besonders zuverlässig. Nur so lässt sich der Text
+    später wortweise dem richtigen Sprecher zuordnen — satzweise Zuordnung
+    verteilt Wortwechsel systematisch falsch.
+    """
+    worte = text.split()
+    if not worte:
+        return []
+    von, bis = max(0.0, a - 0.2), min(gesamt, b + 0.4)
+    treffer = []
+    if bis - von > 0.1:
+        try:
+            treffer = _align_fenster(audio_path, worte, von, bis)
+        except Exception:
+            treffer = []
+    if len(treffer) < len(worte) * 0.6:
+        # Notfalls gleichmäßig verteilen, damit kein Text verloren geht
+        schritt = (b - a) / max(len(worte), 1)
+        return [{"start": a + i * schritt, "ende": a + (i + 1) * schritt,
+                 "text": w, "sprache": None} for i, w in enumerate(worte)]
+    return [{"start": s, "ende": e, "text": worte[nr], "sprache": None}
+            for nr, s, e in treffer]
+
+
+def _asr_dauer(audio_path, start, ende, sprache=None, kontext=""):
+    return int(min(120, max(40, 25 + (ende - start) / 3)))
 
 
 @spaces.GPU(duration=_asr_dauer)
-def _transkribiere_gpu(audio_path, start, ende, sprache=None):
+def _transkribiere_gpu(audio_path, start, ende, sprache=None, kontext=""):
     """Transkribiert ein Fenster am Stück — voller Kontext, beste Qualität.
 
     Die Sprache wird fest vorgegeben: sonst rät Whisper sie pro Abschnitt
@@ -142,26 +169,40 @@ def _transkribiere_gpu(audio_path, start, ende, sprache=None):
     """
     wellenform, sr = loader.crop(audio_path, Segment(start, ende), mode="pad")
     eingabe = {"array": wellenform.squeeze(0).numpy(), "sampling_rate": sr}
-    gk = {"task": "transcribe"}
+    # Strahlsuche statt gieriger Dekodierung und Kontext aus dem Vorlauf:
+    # beides hebt die Trefferquote bei schwierigen Aufnahmen deutlich.
+    gk = {"task": "transcribe", "num_beams": 2, "condition_on_prev_tokens": True}
     if sprache:
         gk["language"] = sprache
+    if kontext:
+        try:
+            gk["prompt_ids"] = asr.tokenizer.get_prompt_ids(
+                kontext[:400], return_tensors="pt").to(asr.model.device)
+            gk["prompt_condition_type"] = "first-segment"
+        except Exception:
+            gk.pop("prompt_ids", None)
     try:
         res = asr(eingabe, return_timestamps=True, generate_kwargs=gk,
                   return_language=not sprache)
     except (TypeError, ValueError):
+        gk.pop("prompt_ids", None)
+        gk.pop("prompt_condition_type", None)
         res = asr(eingabe, return_timestamps=True, generate_kwargs=gk)
 
-    chunks = []
+    sprache_erkannt = None
+    worte = []
     for c in res.get("chunks", []):
         ts = c.get("timestamp") or (None, None)
-        if ts[0] is None or not c.get("text", "").strip():
+        text = (c.get("text") or "").strip()
+        if ts[0] is None or not text:
             continue
+        sprache_erkannt = sprache_erkannt or c.get("language")
         bis = ts[1] if ts[1] is not None else ts[0] + 30.0
-        chunks.append({"start": float(ts[0]) + start,
-                       "ende": float(bis) + start,
-                       "text": c["text"].strip(),
-                       "sprache": c.get("language")})
-    return chunks
+        worte += _worte_einpassen(audio_path, text, float(ts[0]) + start,
+                                  float(bis) + start, ende)
+    for w in worte:
+        w["sprache"] = sprache_erkannt
+    return worte
 
 
 # ---------- Eigenes Transkript einpassen (Forced Alignment) ----------
@@ -288,29 +329,51 @@ def _fenstergrenzen(turns, gesamt):
     return grenzen
 
 
+def _sprecher_bei(turns, zeitpunkt):
+    """Welcher Sprecher ist zu diesem Zeitpunkt aktiv?"""
+    treffer, bester_abstand, ersatz = [], None, None
+    for t in turns:
+        if t["start"] <= zeitpunkt <= t["ende"]:
+            treffer.append(t)
+        else:
+            abstand = min(abs(zeitpunkt - t["start"]), abs(zeitpunkt - t["ende"]))
+            if bester_abstand is None or abstand < bester_abstand:
+                bester_abstand, ersatz = abstand, t
+    if treffer:
+        # Bei Überlappung der längste Redebeitrag — meist die tragende Stimme
+        return max(treffer, key=lambda t: t["ende"] - t["start"])["label"]
+    return ersatz["label"] if ersatz else None
+
+
 def _zusammenfuegen(turns, stats, overlaps, chunks, gesamt, sprache=None):
+    """Baut Sprechersegmente aus den einzeln verorteten Wörtern."""
     sprache = sprache or next(
         (c["sprache"] for c in chunks if c.get("sprache")), None)
 
-    texte = [[] for _ in turns]
-    for c in chunks:
-        mitte = (c["start"] + c["ende"]) / 2
-        best, best_wert = None, None
-        for i, t in enumerate(turns):
-            ueberlappung = max(0.0, min(c["ende"], t["ende"])
-                               - max(c["start"], t["start"]))
-            abstand = abs(mitte - (t["start"] + t["ende"]) / 2)
-            wert = (-ueberlappung, abstand)
-            if best_wert is None or wert < best_wert:
-                best, best_wert = i, wert
-        if best is not None:
-            texte[best].append(c["text"])
+    segmente = []
+    for wort in sorted(chunks, key=lambda c: c["start"]):
+        label = _sprecher_bei(turns, (wort["start"] + wort["ende"]) / 2)
+        if label is None:
+            continue
+        letztes = segmente[-1] if segmente else None
+        if (letztes and letztes["label"] == label
+                and wort["start"] - letztes["ende"] < 2.0):
+            letztes["ende"] = wort["ende"]
+            letztes["worte"].append(wort["text"])
+        else:
+            segmente.append({"start": wort["start"], "ende": wort["ende"],
+                             "label": label, "worte": [wort["text"]]})
 
-    segmente = [{"start": t["start"], "ende": t["ende"], "label": t["label"],
-                 "text": " ".join(texte[i]) or None}
-                for i, t in enumerate(turns)]
+    fertig = [{"start": round(s["start"], 2), "ende": round(s["ende"], 2),
+               "label": s["label"], "text": " ".join(s["worte"])}
+              for s in segmente]
 
-    return {"dauer": round(gesamt, 1), "segmente": segmente, "stats": stats,
+    # Wurde nichts erkannt, wenigstens die Sprecherstruktur zeigen
+    if not fertig:
+        fertig = [{"start": t["start"], "ende": t["ende"],
+                   "label": t["label"], "text": None} for t in turns]
+
+    return {"dauer": round(gesamt, 1), "segmente": fertig, "stats": stats,
             "overlaps": overlaps, "sprache": sprache}
 
 
@@ -410,10 +473,21 @@ def _frontmatter(text):
 # ---------- API-Endpunkte ----------
 
 def _nach_wav(pfad):
-    """Konvertiert beliebige Audioformate (m4a, webm, …) nach 16-kHz-Mono-WAV."""
+    """Konvertiert nach 16-kHz-Mono-WAV und gleicht die Lautstärke an.
+
+    Aufnahmen mit Abstand zum Mikrofon sind oft sehr leise und schwanken
+    stark; die Pegelangleichung verbessert Sprechererkennung und
+    Transkription spürbar.
+    """
     ziel = tempfile.NamedTemporaryFile(suffix=".wav", delete=False).name
-    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", pfad,
-                    "-ar", "16000", "-ac", "1", ziel], check=True)
+    filter_kette = "highpass=f=60,loudnorm=I=-18:LRA=11:TP=-2,dynaudnorm=f=200:g=5"
+    try:
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", pfad,
+                        "-af", filter_kette, "-ar", "16000", "-ac", "1", ziel],
+                       check=True)
+    except subprocess.CalledProcessError:
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", pfad,
+                        "-ar", "16000", "-ac", "1", ziel], check=True)
     return ziel
 
 
@@ -430,7 +504,7 @@ def status_api(key, request: gr.Request = None):
     return {"ok": True, "token": auth.lower().startswith("bearer hf_")}
 
 
-def vorbereiten_api(key, audio, transkript=None):
+def vorbereiten_api(key, audio, transkript=None, kontext=None):
     """Schritt 1: Audio entgegennehmen und in WAV wandeln.
 
     Wird ein Transkript mitgegeben, wird dieses später eingepasst statt
@@ -450,7 +524,8 @@ def vorbereiten_api(key, audio, transkript=None):
     sid = secrets.token_urlsafe(16)
     SITZUNGEN[sid] = {"wav": wav, "quelle": quelle, "zeit": time.time(),
                       "dauer": loader.get_duration(wav), "chunks": [],
-                      "worte": worte, "fa_zeit": 0.0, "fa_wort": 0}
+                      "worte": worte, "fa_zeit": 0.0, "fa_wort": 0,
+                      "kontext": (kontext or "").strip()}
     return {"ok": True, "id": sid, "dauer": round(SITZUNGEN[sid]["dauer"], 1),
             "modus": "transkript" if worte else "erkennung",
             "woerter": len(worte)}
@@ -509,7 +584,7 @@ def transkribieren_api(key, sid, index):
     try:
         s["chunks"] += _transkribiere_gpu(s["wav"], s["fenster"][i],
                                           s["fenster"][i + 1],
-                                          s.get("sprache"))
+                                          s.get("sprache"), s.get("kontext", ""))
     except Exception as e:
         traceback.print_exc()
         return {"ok": False,
@@ -534,9 +609,10 @@ def abschliessen_api(key, sid):
             "quelle": s["quelle"], "sprache": daten.get("sprache")}
 
 
-def analysieren_api(key, audio, num_speakers, sprache=None, transkript=None):
+def analysieren_api(key, audio, num_speakers, sprache=None, transkript=None,
+                    kontext=None):
     """Alle Schritte in einem Aufruf — nur für kurze Aufnahmen geeignet."""
-    vor = vorbereiten_api(key, audio, transkript)
+    vor = vorbereiten_api(key, audio, transkript, kontext)
     if not vor.get("ok"):
         return vor
     sid = vor["id"]
@@ -622,17 +698,19 @@ with gr.Blocks(title="Sprecher-Analyse API") as demo:
                                   value="german")
         transkript_feld = gr.Textbox(
             label="Eigenes Transkript (leer = selbst erkennen)", lines=4)
+        kontext_feld = gr.Textbox(label="Namen & Begriffe (optional)")
         b_analyse = gr.Button("Analysieren", variant="primary")
         out_analyse = gr.JSON()
         b_analyse.click(analysieren_api,
-                        [key, audio, num_speakers, sprache_feld, transkript_feld],
+                        [key, audio, num_speakers, sprache_feld, transkript_feld,
+                         kontext_feld],
                         out_analyse, api_name="analysieren")
     with gr.Tab("Schrittweise (lange Aufnahmen)"):
         sid = gr.Textbox(label="Sitzungs-ID")
         idx = gr.Number(value=0, precision=0, label="Abschnitt")
         gr.Button("1 · Vorbereiten").click(
-            vorbereiten_api, [key, audio, transkript_feld], gr.JSON(),
-            api_name="vorbereiten")
+            vorbereiten_api, [key, audio, transkript_feld, kontext_feld],
+            gr.JSON(), api_name="vorbereiten")
         gr.Button("2 · Sprecher erkennen").click(
             diarisieren_api, [key, sid, num_speakers, sprache_feld], gr.JSON(),
             api_name="diarisieren")
