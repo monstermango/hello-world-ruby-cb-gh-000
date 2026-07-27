@@ -80,6 +80,27 @@ async function loginPruefen(neuerKey) {
   localStorage.setItem("sa_key", neuerKey);
   $("#login").hidden = true;
   verlaufAnzeigen(antwort.eintraege);
+  tokenStatusPruefen();
+}
+
+// Fragt das Backend, ob die Anfragen mit HF-Token ankommen. Ohne Token läuft
+// alles auf dem sehr kleinen anonymen GPU-Kontingent.
+let tokenAktiv = null;
+
+async function tokenStatusPruefen() {
+  const feld = $("#token-status");
+  try {
+    const s = await rufe("/status", [schluessel]);
+    tokenAktiv = !!s.token;
+  } catch (e) {
+    tokenAktiv = null;
+  }
+  feld.hidden = tokenAktiv === null;
+  feld.textContent = tokenAktiv ? "Konto-Kontingent" : "ohne Token";
+  feld.classList.toggle("warn", tokenAktiv === false);
+  $("#login-status").textContent = tokenAktiv
+    ? "HF-Token aktiv — GPU läuft über dein Konto."
+    : "Kein HF-Token aktiv — nur kleines anonymes GPU-Kontingent.";
 }
 
 $("#btn-login").addEventListener("click", async () => {
@@ -104,7 +125,7 @@ $("#key-input").addEventListener("keydown", (e) => {
 });
 
 $("#btn-key").addEventListener("click", () => {
-  $("#key-input").value = "";
+  $("#key-input").value = schluessel;
   $("#hf-input").value = hfToken;
   $("#login").hidden = false;
 });
@@ -260,7 +281,12 @@ $("#btn-analyse").addEventListener("click", async () => {
     letzteAnalyse = d;
     ergebnisAnzeigen(d, false);
   } catch (e) {
-    toast("Fehler: " + e.message);
+    let hinweis = "";
+    if (/ZeroGPU|quota|runs limit/i.test(e.message) && tokenAktiv === false) {
+      hinweis = " — Es ist kein HF-Token hinterlegt. Über ⚙︎ eintragen, dann "
+              + "läuft die GPU über dein Konto.";
+    }
+    toast("Fehler: " + e.message + hinweis);
   } finally {
     clearInterval(ticker);
     $("#btn-analyse").disabled = false;

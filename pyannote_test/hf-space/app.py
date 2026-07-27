@@ -417,6 +417,19 @@ def _nach_wav(pfad):
     return ziel
 
 
+def status_api(key, request: gr.Request = None):
+    """Meldet, ob die Anfrage mit HF-Token ankommt (GPU-Kontingent-Zuordnung)."""
+    if not _pruefe(key):
+        return {"ok": False, "fehler": "Ungültiger Zugangsschlüssel."}
+    kopf = {}
+    try:
+        kopf = dict(request.headers) if request is not None else {}
+    except Exception:
+        pass
+    auth = kopf.get("authorization") or kopf.get("Authorization") or ""
+    return {"ok": True, "token": auth.lower().startswith("bearer hf_")}
+
+
 def vorbereiten_api(key, audio, transkript=None):
     """Schritt 1: Audio entgegennehmen und in WAV wandeln.
 
@@ -598,6 +611,8 @@ with gr.Blocks(title="Sprecher-Analyse API") as demo:
                 f"Die App selbst läuft unter **[{FRONTEND}]({FRONTEND})**. "
                 f"Dieses Formular dient nur zu Testzwecken.")
     key = gr.Textbox(label="Zugangsschlüssel", type="password")
+    gr.Button("Status prüfen").click(status_api, [key], gr.JSON(),
+                                     api_name="status")
     with gr.Tab("Analyse"):
         audio = gr.Audio(sources=["upload", "microphone"], type="filepath",
                          label="Audio")

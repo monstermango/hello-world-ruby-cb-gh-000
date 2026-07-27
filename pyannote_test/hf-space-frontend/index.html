@@ -18,7 +18,10 @@
 
 <header class="topbar">
   <h1>Sprecher-Analyse</h1>
-  <button id="btn-key" class="icon-btn" title="Zugangsschlüssel ändern">⚙︎</button>
+  <div class="row">
+    <span id="token-status" class="status" hidden></span>
+    <button id="btn-key" class="icon-btn" title="Einstellungen">⚙︎</button>
+  </div>
 </header>
 
 <main>
@@ -112,6 +115,7 @@
   <div class="sheet">
     <h2>Anmelden</h2>
     <p class="dim">Bitte den Zugangsschlüssel der App eingeben.</p>
+    <div id="login-status" class="dim klein"></div>
     <input id="key-input" type="text" placeholder="Zugangsschlüssel"
            autocomplete="off" autocapitalize="none" autocorrect="off"
            spellcheck="false">

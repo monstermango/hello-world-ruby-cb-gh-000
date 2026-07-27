@@ -63,6 +63,9 @@ button { font: inherit; border: 0; cursor: pointer; color: inherit; background: 
   border: 1px solid var(--linie); color: var(--primary); font-weight: 600;
 }
 .icon-btn { min-width: 44px; min-height: 44px; font-size: 1.2rem; color: var(--dim) }
+.status { font-size: .75rem; padding: 3px 9px; border-radius: 999px;
+  background: var(--blase); color: var(--dim); white-space: nowrap }
+.status.warn { background: var(--warn-bg); color: var(--text) }
 
 .rec-btn {
   width: 84px; height: 84px; border-radius: 50%;
