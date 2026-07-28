@@ -449,21 +449,29 @@ def _glossar_speichern(zaehler, sprecher):
 
 
 def _glossar_fortschreiben(segmente, sprechernamen):
-    """Zählt Begriffe des neuen Transkripts mit — ohne Zutun des Nutzers."""
+    """Zählt Begriffe des neuen Transkripts mit — ohne Zutun des Nutzers.
+
+    Gibt zusätzlich zurück, was neu hinzugekommen ist: nur so kann die App
+    nachvollziehbar machen, dass und was das Glossar gelernt hat.
+    """
     try:
         g = _glossar_laden(frisch=True)
         zaehler = dict(g["zaehler"])
+        neu = []
         for wort, anzahl in _begriffe_zaehlen(segmente).items():
+            if wort not in zaehler:
+                neu.append(wort)
             zaehler[wort] = zaehler.get(wort, 0) + anzahl
         sprecher = list(g["sprecher"])
         for name in sprechernamen:
             if name and name not in sprecher:
                 sprecher.append(name)
+                neu.append(name)
         _glossar_speichern(zaehler, sprecher)
-        return _glossar_laden()
+        return _glossar_laden(), neu
     except Exception:
         traceback.print_exc()
-        return _glossar_laden()
+        return _glossar_laden(), []
 
 
 def glossar_api(key):
@@ -651,11 +659,13 @@ def abschliessen_api(key, sid):
     _dateien_loeschen(s)
     zeitpunkt = datetime.now(ZEITZONE)
     namen, farben = _namen_farben(daten["stats"])
-    glossar = _glossar_fortschreiben(daten["segmente"], [])
+    glossar, neue_begriffe = _glossar_fortschreiben(daten["segmente"], [])
     return {"ok": True, "daten": daten, "namen": namen, "farben": farben,
             "zeitpunkt": zeitpunkt.isoformat(timespec="seconds"),
             "quelle": s["quelle"], "sprache": daten.get("sprache"),
             "glossar": glossar["begriffe"][:GLOSSAR_PROMPT],
+            "glossar_gesamt": len(glossar["begriffe"]),
+            "neue_begriffe": neue_begriffe,
             "sprecher_bekannt": glossar["sprecher"]}
 
 
@@ -698,9 +708,11 @@ def speichern_api(key, analyse, namen):
     except Exception as e:
         return {"ok": False, "fehler": f"Speichern fehlgeschlagen: {e}"}
 
+    neue = []
     if eigene:                      # Sprechernamen fürs nächste Mal merken
-        _glossar_fortschreiben([], list(eigene.values()))
-    return {"ok": True, "pfad": pfad, "markdown": md_text}
+        _, neue = _glossar_fortschreiben([], list(eigene.values()))
+    return {"ok": True, "pfad": pfad, "markdown": md_text,
+            "neue_begriffe": neue}
 
 
 def verlauf_api(key):

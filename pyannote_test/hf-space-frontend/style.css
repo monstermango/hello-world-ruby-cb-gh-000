@@ -164,6 +164,8 @@ summary b { color: var(--text) }
   border-radius: 12px; overflow-wrap: anywhere }
 .sa-warn { margin-top: 14px; padding: 10px 14px; border-radius: 10px;
   background: var(--warn-bg); font-size: .9rem }
+.gelernt { margin-top: 16px; padding: 10px 14px; border-radius: 10px;
+  background: var(--blase); color: var(--dim); font-size: .85rem }
 .md-aktionen { margin-top: 16px }
 .breit { display: block; width: 100%; margin-top: 8px; text-align: center }
 .namen-zeile { margin: 10px 0 }

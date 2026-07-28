@@ -151,10 +151,8 @@ document.querySelectorAll(".tab").forEach((btn) => {
       b.classList.toggle("active", b === btn));
     const ziel = btn.dataset.view;
     $("#view-analyse").hidden = ziel !== "analyse";
-    $("#view-glossar").hidden = ziel !== "glossar";
     $("#view-verlauf").hidden = ziel !== "verlauf";
     if (ziel === "verlauf") verlaufLaden();
-    if (ziel === "glossar") glossarLaden();
   });
 });
 
@@ -445,6 +443,17 @@ function ergebnisAnzeigen(d, gespeichert) {
       `<div class="sa-bubble">${esc(s.text)}</div></div></div>`;
   }
 
+  // Das Glossar pflegt sich selbst — hier wird nur nachvollziehbar, dass
+  // und was es gelernt hat. Bedienen muss man dafür nichts.
+  let gelernt = "";
+  if ((d.neue_begriffe || []).length) {
+    const woerter = d.neue_begriffe.slice(0, 6).map(esc).join(", ");
+    const rest = d.neue_begriffe.length > 6
+      ? ` und ${d.neue_begriffe.length - 6} weitere` : "";
+    gelernt = `<div class="gelernt">📖 Neu gemerkt: ${woerter}${rest}. ` +
+      `Künftige Aufnahmen werden dadurch treffsicherer.</div>`;
+  }
+
   let hinweis = "";
   if (daten.overlaps.length) {
     const stellen = daten.overlaps
@@ -489,7 +498,7 @@ function ergebnisAnzeigen(d, gespeichert) {
   $("#ergebnis").innerHTML =
     `<div class="card">${meta}<div class="sa-bar">${balken}</div>` +
     `<div class="sa-legs">${legende}</div>${abschluss}` +
-    `${zeitleiste}${gespraech}${hinweis}</div>`;
+    `${zeitleiste}${gespraech}${hinweis}${gelernt}</div>`;
 
   if (gespeichert) {
     $("#btn-md-laden").addEventListener("click", () => mdHerunterladen());
@@ -571,6 +580,10 @@ async function glossarSpeichern(begriffe, sprecher) {
   glossar = { begriffe: g.begriffe || [], sprecher: g.sprecher || [] };
   return glossar;
 }
+
+$("#glossar-box").addEventListener("toggle", () => {
+  if ($("#glossar-box").open && schluessel) glossarLaden();
+});
 
 $("#btn-glossar-speichern").addEventListener("click", async () => {
   const btn = $("#btn-glossar-speichern");

@@ -52,7 +52,7 @@ export class Client {
     if (ep === "/abschliessen" || ep === "/analysieren") return {data: [{ok: true,
       zeitpunkt: "2026-07-25T07:04:53+02:00",
       quelle: "dialog.wav", sprache: "german",
-      vorschlaege: ["Entwicklungsgespräch"], sprecher_bekannt: ["Nils"],
+      neue_begriffe: ["Entwicklungsgespräch", "Hedi"], sprecher_bekannt: ["Nils"],
       namen: {A: "Sprecher 1", B: "Sprecher 2"},
       farben: {A: "#4e79a7", B: "#f28e2b"},
       daten: {dauer: 23.4,
@@ -141,7 +141,11 @@ async def main():
         abschnitte = await page.evaluate("window._abschnitte")
         assert abschnitte == 3, f"Nicht alle Abschnitte geholt: {abschnitte}"
 
-        # 4a. Sprecher benennen und speichern
+        # 4a. Das Glossar lernt sichtbar mit
+        gelernt = await page.locator(".gelernt").inner_text()
+        assert "Entwicklungsgespräch" in gelernt and "Hedi" in gelernt, gelernt
+
+        # 4b. Sprecher benennen und speichern
         assert await page.locator(".namen-feld").count() == 2, "Namensfelder fehlen"
         await page.locator(".namen-feld").first.fill("Nils")
         await page.locator("#btn-speichern").dispatch_event("click")

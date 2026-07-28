@@ -116,26 +116,6 @@
     <div id="ergebnis"></div>
   </section>
 
-  <!-- Glossar -->
-  <section id="view-glossar" class="view" hidden>
-    <div class="card">
-      <p class="dim klein">Wird nach jeder Analyse automatisch fortgeschrieben
-        und nach Häufigkeit sortiert. Die obersten Begriffe bekommt die
-        Erkennung als Vorwissen mit, damit der Hinweis kurz und wirksam bleibt.
-        Alles bleibt in deinem privaten Speicher; du kannst hier jederzeit
-        eingreifen.</p>
-      <label class="opt-block">
-        <span>Begriffe — häufigste zuerst, Reihenfolge = Rang</span>
-        <textarea id="g-begriffe" rows="8"></textarea>
-      </label>
-      <label class="opt-block">
-        <span>Sprechernamen</span>
-        <textarea id="g-sprecher" rows="4"></textarea>
-      </label>
-      <button id="btn-glossar-speichern" class="primary">Glossar speichern</button>
-    </div>
-  </section>
-
   <!-- Verlauf -->
   <section id="view-verlauf" class="view" hidden>
     <div id="verlauf-liste"></div>
@@ -150,9 +130,6 @@
 <nav class="tabbar">
   <button data-view="analyse" class="tab active">
     <span class="tab-icon">🎙️</span><span>Analyse</span>
-  </button>
-  <button data-view="glossar" class="tab">
-    <span class="tab-icon">📖</span><span>Glossar</span>
   </button>
   <button data-view="verlauf" class="tab">
     <span class="tab-icon">📋</span><span>Verlauf</span>
@@ -175,6 +152,23 @@
       GPU-Kontingent genutzt wird.</p>
     <button id="btn-login" class="primary">Weiter</button>
     <div id="login-fehler" class="fehler"></div>
+
+    <details id="glossar-box">
+      <summary>Glossar ansehen</summary>
+      <p class="dim klein">Wiederkehrende Namen und Begriffe werden nach jeder
+        Analyse automatisch gesammelt und der Erkennung als Vorwissen
+        mitgegeben. Änderungen sind selten nötig — die Reihenfolge legt fest,
+        was Vorrang hat.</p>
+      <label class="opt-block">
+        <span>Begriffe</span>
+        <textarea id="g-begriffe" rows="6"></textarea>
+      </label>
+      <label class="opt-block">
+        <span>Sprechernamen</span>
+        <textarea id="g-sprecher" rows="3"></textarea>
+      </label>
+      <button id="btn-glossar-speichern" class="ghost breit">Glossar sichern</button>
+    </details>
   </div>
 </div>
 
