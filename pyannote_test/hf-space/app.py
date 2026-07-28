@@ -477,8 +477,13 @@ def _sitzung(sid):
 
 # ---------- Markdown-Ablage ----------
 
-def _speichern(md_text, zeitpunkt):
-    pfad = f"aufnahmen/{zeitpunkt:%Y-%m-%d_%H%M%S}.md"
+def _speichern(md_text, zeitpunkt, pfad=None):
+    # Mit vorhandenem Pfad wird ersetzt statt danebengelegt: der
+    # Hintergrundlauf sichert bereits ein Ergebnis, und nachträglich
+    # benannte Sprecher sollen dieselbe Aufnahme aktualisieren, nicht
+    # eine zweite Datei erzeugen.
+    pfad = pfad if (pfad and pfad_erlaubt(pfad)) \
+        else f"aufnahmen/{zeitpunkt:%Y-%m-%d_%H%M%S}.md"
     api.upload_file(path_or_fileobj=md_text.encode("utf-8"), path_in_repo=pfad,
                     repo_id=DATEN_REPO, repo_type="dataset",
                     commit_message=f"Analyse {pfad}")
@@ -687,6 +692,22 @@ def _auftrag_lauf(jid, sid, num_speakers, sprache):
         e = abschliessen_api(APP_KEY, sid)
         if not e.get("ok"):
             raise RuntimeError(e.get("fehler", "Abschluss fehlgeschlagen"))
+
+        # Sofort sichern. Im alten Ablauf tippte der Nutzer nach dem
+        # Ergebnis auf „Speichern“ — im Hintergrund tippt niemand, und
+        # ohne das lag das Ergebnis nur im Arbeitsspeicher und war beim
+        # Schließen der App verloren. Benannt wird mit dem, was schon
+        # bekannt ist; Nachbenennen ersetzt später dieselbe Datei.
+        j.update(schritt="Sichern")
+        try:
+            namen = dict(e.get("vorschlag") or {})
+            md = _markdown(e["daten"], e.get("quelle") or "aufnahme",
+                           datetime.fromisoformat(e["zeitpunkt"]), namen)
+            e["pfad"] = _speichern(md, datetime.fromisoformat(e["zeitpunkt"]))
+            e["markdown"] = md
+        except Exception:
+            traceback.print_exc()
+
         j.update(stand="fertig", ergebnis=e, zeit=time.time())
         _push_senden("Analyse fertig",
                      f"{len(e.get('daten', {}).get('stats', {}))} Sprecher, "
@@ -1191,7 +1212,7 @@ def speichern_api(key, analyse, namen):
               if isinstance(v, str) and v.strip()}
     md_text = _markdown(daten, quelle, zeitpunkt, eigene)
     try:
-        pfad = _speichern(md_text, zeitpunkt)
+        pfad = _speichern(md_text, zeitpunkt, analyse.get("pfad"))
     except Exception as e:
         return {"ok": False, "fehler": f"Speichern fehlgeschlagen: {e}"}
 

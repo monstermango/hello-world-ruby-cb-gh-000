@@ -385,7 +385,13 @@ async function analyseRahmen(arbeit) {
     if (!d.ok) throw new Error(d.fehler);
     laufLoeschen();
     letzteAnalyse = d;
-    ergebnisAnzeigen(d, false);
+    // Der Hintergrundlauf sichert selbst — dann ist das Markdown schon
+    // da und der Herunterladen-Knopf muss nicht auf einen Tastendruck
+    // warten, der womöglich nie kommt.
+    if (d.pfad && d.markdown) {
+      letztesMarkdown = { text: d.markdown, name: d.pfad.split("/").pop() };
+    }
+    ergebnisAnzeigen(d, Boolean(d.pfad && d.markdown));
     // Ergebnis in den Blick holen — sonst steht es unter der Eingabe.
     // Etwas Vorlauf, damit die Kopfzeile nicht unter der Titelleiste liegt.
     window.scrollTo({ top: Math.max(0, $("#ergebnis").offsetTop - 88),
@@ -783,6 +789,7 @@ async function speichern() {
     const d = await rufe("/speichern", [schluessel, letzteAnalyse, eigene]);
     if (!d.ok) throw new Error(d.fehler);
     letztesMarkdown = { text: d.markdown, name: d.pfad.split("/").pop() };
+    letzteAnalyse.pfad = d.pfad;   // damit Nachbenennen dieselbe Datei trifft
     letzteAnalyse.namen = { ...letzteAnalyse.namen, ...eigene };
     ergebnisAnzeigen(letzteAnalyse, true);
     toast("Als Markdown gespeichert");
