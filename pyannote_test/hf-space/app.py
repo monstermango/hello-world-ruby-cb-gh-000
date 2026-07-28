@@ -800,6 +800,34 @@ def _push_oeffentlich():
     return base64.urlsafe_b64encode(roh).decode().rstrip("=")
 
 
+_vapid_pfad = {"wert": None}
+
+
+def _vapid_datei():
+    """Schreibt den privaten Schlüssel einmalig als Datei.
+
+    pywebpush nimmt für `vapid_private_key` einen Dateipfad oder
+    base64-kodiertes DER — eine PEM-Zeichenkette weist es mit „Could not
+    deserialize key data“ zurück. Der Dateipfad ist die dokumentierte und
+    eindeutige Form; die Datei liegt nur im flüchtigen Space-Dateisystem.
+    """
+    if not _vapid_pfad["wert"] or not os.path.exists(_vapid_pfad["wert"]):
+        pfad = os.path.join(tempfile.gettempdir(), "vapid_privat.pem")
+        with open(pfad, "w", encoding="utf-8") as fh:
+            fh.write(_push_zustand()["vapid_pem"])
+        os.chmod(pfad, 0o600)
+        _vapid_pfad["wert"] = pfad
+    return _vapid_pfad["wert"]
+
+
+def _dienst(abo):
+    """Welcher Zustelldienst — hilft, Apple von anderen zu unterscheiden."""
+    try:
+        return (abo.get("endpoint", "").split("/")[2]) or "?"
+    except Exception:
+        return "?"
+
+
 def _push_bereit():
     """Ist die Versandbibliothek überhaupt da? -> (ja, Grund)
 
@@ -820,26 +848,40 @@ def _push_senden(titel, text):
         from pywebpush import webpush, WebPushException
     except Exception as e:
         return 0, [f"Versandbibliothek fehlt: {e}"]
+    z = _push_zustand()
     uebrig, geaendert, zugestellt, fehler = [], False, 0, []
     for abo in z.get("abos", []):
         try:
+            # Zwei Dinge, die beim ersten echten Versand aufgefallen sind:
+            # ohne Zeitgrenze kann der Aufruf hängen, bis die HTTP-Anfrage
+            # des Browsers aufgibt — dann sieht der Nutzer nur „An error
+            # occurred“ und weiß nichts. Und der sub-Anspruch muss eine
+            # erreichbare Adresse sein; erfundene .invalid-Domains weisen
+            # Zustelldienste zurück.
             webpush(subscription_info=abo,
                     data=json.dumps({"titel": titel, "text": text}),
-                    vapid_private_key=z["vapid_pem"],
-                    vapid_claims={"sub": "mailto:app@example.invalid"})
+                    vapid_private_key=_vapid_datei(),
+                    vapid_claims={"sub": FRONTEND},
+                    timeout=10)
             uebrig.append(abo)
             zugestellt += 1
         except WebPushException as e:
             # 404/410 heißt: Gerät hat abgemeldet. Eintrag darf weg.
-            code = getattr(getattr(e, "response", None), "status_code", None)
+            antwort = getattr(e, "response", None)
+            code = getattr(antwort, "status_code", None)
+            rumpf = ""
+            try:
+                rumpf = (antwort.text or "")[:120]
+            except Exception:
+                pass
             if code in (404, 410):
                 geaendert = True
             else:
                 uebrig.append(abo)
-            fehler.append(f"{code or ''} {e}".strip()[:200])
+            fehler.append(f"{_dienst(abo)} {code or '?'}: {rumpf or e}"[:200])
         except Exception as e:
             uebrig.append(abo)
-            fehler.append(f"{type(e).__name__}: {e}"[:200])
+            fehler.append(f"{_dienst(abo)} {type(e).__name__}: {e}"[:200])
     if geaendert:
         z["abos"] = uebrig
         try:
@@ -858,6 +900,24 @@ def push_schluessel_api(key):
         return {"ok": False, "fehler": str(e)}
 
 
+def push_stand_api(key):
+    """Sagt ohne Netzverkehr, wie es um Push steht.
+
+    Bewusst getrennt vom Versand: hängt der Versand, liefert diese
+    Auskunft trotzdem sofort und man sieht, woran es nicht liegt.
+    """
+    if not _pruefe(key):
+        return {"ok": False, "fehler": "Ungültiger Zugangsschlüssel."}
+    bereit, grund = _push_bereit()
+    try:
+        z = _push_zustand()
+        return {"ok": True, "bibliothek": grund,
+                "geraete": [_dienst(a) for a in z.get("abos", [])],
+                "schluessel": bool(z.get("vapid_pem"))}
+    except Exception as e:
+        return {"ok": False, "bibliothek": grund, "fehler": str(e)}
+
+
 def push_pruefen_api(key):
     """Schickt eine Probe-Benachrichtigung und sagt, was dabei geschah."""
     if not _pruefe(key):
@@ -873,8 +933,13 @@ def push_pruefen_api(key):
     if not geraete:
         return {"ok": False, "bibliothek": grund, "geraete": 0,
                 "fehler": "Kein Gerät angemeldet."}
-    zugestellt, fehler = _push_senden(
-        "Probe", "Wenn du das liest, funktionieren Benachrichtigungen.")
+    try:
+        zugestellt, fehler = _push_senden(
+            "Probe", "Wenn du das liest, funktionieren Benachrichtigungen.")
+    except Exception as e:
+        traceback.print_exc()
+        return {"ok": False, "bibliothek": grund, "geraete": geraete,
+                "fehler": f"{type(e).__name__}: {e}"}
     return {"ok": zugestellt > 0, "bibliothek": grund, "geraete": geraete,
             "zugestellt": zugestellt, "meldungen": fehler}
 
@@ -1268,6 +1333,8 @@ with gr.Blocks(title="Sprecher-Analyse API") as demo:
             api_name="auftrag")
         gr.Button("Push-Schlüssel").click(
             push_schluessel_api, [key], gr.JSON(), api_name="push_schluessel")
+        gr.Button("Push-Zustand").click(
+            push_stand_api, [key], gr.JSON(), api_name="push_stand")
         gr.Button("Push prüfen").click(
             push_pruefen_api, [key], gr.JSON(), api_name="push_pruefen")
         gr.Button("Push anmelden").click(

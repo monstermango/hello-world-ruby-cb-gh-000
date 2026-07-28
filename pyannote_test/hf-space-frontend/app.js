@@ -147,22 +147,36 @@ $("#btn-login").addEventListener("click", async () => {
 
 $("#btn-push-test").addEventListener("click", async () => {
   const feld = $("#push-status");
+  // In Stufen, jede einzeln berichtet. Beim ersten Versuch verschluckte
+  // ein hängender Versand alles und übrig blieb „An error occurred“ —
+  // eine Meldung, mit der niemand etwas anfangen kann.
   feld.textContent = "Melde dieses Gerät an …";
-  await benachrichtigungAnbieten();
-  feld.textContent = "Sende Probe …";
+  const anmeldung = await benachrichtigungAnbieten();
+  if (anmeldung) {
+    feld.textContent = `Anmeldung fehlgeschlagen: ${anmeldung}`;
+    return;
+  }
+  try {
+    const z = await rufe("/push_stand", [schluessel]);
+    feld.textContent = `Bibliothek: ${z.bibliothek}, `
+      + `Geräte: ${(z.geraete || []).join(", ") || "keins"}. Sende Probe …`;
+  } catch (e) {
+    feld.textContent = "Zustand nicht abrufbar: " + e.message;
+    return;
+  }
   try {
     const d = await rufe("/push_pruefen", [schluessel]);
     if (d.ok) {
       feld.textContent = `Gesendet an ${d.zugestellt} von ${d.geraete} `
-        + `Gerät(en). Kommt gleich keine Nachricht an, ist die Zustellung `
-        + `das Problem, nicht die Einrichtung.`;
+        + `Gerät(en). Kommt jetzt keine Nachricht, liegt es an iOS, `
+        + `nicht an der Einrichtung.`;
     } else {
-      feld.textContent = `Fehlgeschlagen: ${d.fehler}`
-        + (d.bibliothek && d.bibliothek !== "bereit" ? ` (${d.bibliothek})` : "")
-        + ((d.meldungen || []).length ? ` — ${d.meldungen[0]}` : "");
+      feld.textContent = `Fehlgeschlagen: ${d.fehler || ""} `
+        + ((d.meldungen || []).join(" | ") || "");
     }
   } catch (e) {
-    feld.textContent = "Fehlgeschlagen: " + e.message;
+    feld.textContent = "Versand ohne Antwort (" + e.message
+      + ") — vermutlich Zeitüberschreitung beim Zustelldienst.";
   }
 });
 
@@ -475,31 +489,39 @@ async function benachrichtigungAnbieten() {
   // Auf dem iPhone geht Web Push nur in der zum Home-Bildschirm
   // hinzugefügten App, und die Erlaubnis muss aus einer Nutzergeste
   // kommen. Der Start der Analyse ist genau so eine.
-  if (!("Notification" in window) || !("serviceWorker" in navigator)) return;
-  if (Notification.permission === "denied") return;
-  if (localStorage.getItem("sa_push") === "aus") return;
+  // Gibt den Grund zurück, wenn es nicht klappt — sonst bleibt jeder
+  // Fehlschlag unsichtbar. Leerer Rückgabewert heißt: eingerichtet.
+  if (!("Notification" in window) || !("serviceWorker" in navigator)) {
+    return "Dieser Browser kann keine Benachrichtigungen. Die App muss vom "
+      + "Home-Bildschirm geöffnet sein, nicht aus Safari.";
+  }
+  if (Notification.permission === "denied") {
+    return "In den iOS-Einstellungen abgelehnt.";
+  }
   try {
     if (Notification.permission === "default") {
       if (await Notification.requestPermission() !== "granted") {
-        localStorage.setItem("sa_push", "aus");
-        return;
+        return "Erlaubnis nicht erteilt.";
       }
     }
     const reg = await navigator.serviceWorker.ready;
     let abo = await reg.pushManager.getSubscription();
     if (!abo) {
       const k = await rufe("/push_schluessel", [schluessel]);
-      if (!k.ok) return;
+      if (!k.ok) return "Kein Push-Schlüssel vom Backend.";
       abo = await reg.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: k.schluessel,
       });
     }
-    await rufe("/push_anmelden", [schluessel, abo.toJSON()]);
+    const a = await rufe("/push_anmelden", [schluessel, abo.toJSON()]);
+    if (!a.ok) return a.fehler || "Anmeldung abgelehnt.";
+    return "";
   } catch (e) {
     // Benachrichtigungen sind Zugabe — ihr Fehlschlag darf die Analyse
-    // nicht aufhalten.
+    // nicht aufhalten. Gemeldet wird er trotzdem.
     console.warn("Push nicht eingerichtet:", e);
+    return e.message || String(e);
   }
 }
 
