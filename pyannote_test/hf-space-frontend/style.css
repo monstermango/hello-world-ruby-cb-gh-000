@@ -83,10 +83,20 @@ button { font: inherit; border: 0; cursor: pointer; color: inherit; background: 
   margin-right: 7px; border-radius: 50%; background: var(--gefahr);
   animation: puls 1.4s infinite }
 
+/* Kennzeichnet, was die App wirklich braucht und was nur hilft. */
+.marke { display: inline-block; margin-left: 8px; padding: 1px 8px;
+  border-radius: 999px; font-size: .72rem; font-weight: 600;
+  vertical-align: 2px; white-space: nowrap;
+  background: var(--warn-bg); color: var(--text) }
+.marke.bonus { background: var(--blase); color: var(--dim) }
+
 .schritte { margin: 0; padding-left: 26px }
 .schritte li { margin: 10px 0 }
 .schritte li b { display: block }
 .schritte li span { display: block; margin-top: 1px }
+/* Muss die Blockregel darüber schlagen, sonst rutscht die Marke
+   in eine eigene Zeile statt neben die Überschrift. */
+.schritte li .marke { display: inline-block; margin-top: 0 }
 
 .rec-btn {
   width: 48px; height: 48px; flex: 0 0 48px; border-radius: 50%;

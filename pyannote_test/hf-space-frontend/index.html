@@ -34,8 +34,10 @@
   <!-- Analyse -->
   <section id="view-analyse" class="view">
     <div id="rec-area" class="card">
-      <button id="btn-datei" class="primary">Aufnahme auswählen</button>
-      <div class="dim klein mitte">Sprachmemo aus „Dateien“ oder iCloud</div>
+      <button id="btn-datei" class="primary">Audiodatei auswählen</button>
+      <div class="dim klein mitte">Sprachmemo aus „Dateien“ oder iCloud.
+        Ohne Audio geht es nicht — die Sprechertrennung wird daraus
+        gemessen.</div>
       <!-- Nebenweg: bewusst als schlichter Textlink, nicht als zweite
            Hauptaktion — aufgenommen wird in aller Regel in Sprachmemos. -->
       <button id="btn-record" class="textlink">oder direkt hier aufnehmen</button>
@@ -48,9 +50,14 @@
       <ol class="schritte">
         <li><b>Meeting aufnehmen</b><span class="dim klein">
           mit Sprachmemos auf dem iPhone</span></li>
-        <li><b>Hier auswählen</b><span class="dim klein">
-          Datei wählen und das Transkript aus Sprachmemos einfügen —
-          das liefert den besten Text</span></li>
+        <li><b>Audiodatei hier auswählen <span class="marke">nötig</span></b>
+          <span class="dim klein">
+          Aus der Aufnahme kommt, wer wann gesprochen hat</span></li>
+        <li><b>Transkript einfügen
+          <span class="marke bonus">Bonus</span></b>
+          <span class="dim klein">
+          Aus Sprachmemos kopieren — macht den Wortlaut genauer. Ohne das
+          erkennt die App die Wörter selbst</span></li>
         <li><b>Als Markdown sichern</b><span class="dim klein">
           Sprecher benennen, herunterladen oder teilen</span></li>
       </ol>
@@ -63,12 +70,14 @@
       </div>
       <audio id="audio-preview" controls></audio>
       <details id="transkript-box" open>
-        <summary><b>Transkript aus Sprachmemos einfügen</b> — empfohlen</summary>
-        <p class="dim klein">In Sprachmemos die Aufnahme öffnen, Transkript
-          anzeigen, kopieren, hier einfügen. Der Text wird dann wortgetreu
-          übernommen und nur noch den Sprechern zugeordnet — deutlich
+        <summary><b>Transkript aus Sprachmemos</b>
+          <span class="marke bonus">Bonus</span></summary>
+        <p class="dim klein">Rein optional. In Sprachmemos die Aufnahme
+          öffnen, Transkript anzeigen, kopieren, hier einfügen. Der Text wird
+          dann wortgetreu übernommen und nur noch den Sprechern zugeordnet —
           genauer und schneller als eigene Erkennung. Leer lassen, wenn die
-          App selbst erkennen soll.</p>
+          App die Wörter selbst erkennen soll; die Sprechertrennung kommt so
+          oder so aus der Audiodatei.</p>
         <textarea id="transkript" rows="4"
                   placeholder="Transkript hier einfügen …"></textarea>
         <div id="transkript-info" class="dim klein"></div>

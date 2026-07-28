@@ -169,6 +169,23 @@ async def main():
         assert not await page.locator("#login").is_visible(), \
             "Tippen neben das Blatt schliesst nicht"
 
+        # 3b. Die Anleitung muss trennen, was nötig ist und was nur hilft:
+        #     ohne Audiodatei laeuft gar nichts, das Apple-Transkript ist
+        #     eine Zugabe.
+        anleitung = await page.locator("#anleitung").inner_text()
+        assert "nötig" in anleitung and "Bonus" in anleitung, \
+            f"Anleitung kennzeichnet Pflicht/Bonus nicht: {anleitung!r}"
+        marken = await page.locator("#anleitung .marke").count()
+        assert marken == 2, f"Erwartet 2 Marken, gefunden {marken}"
+        # Die Marke gehoert neben die Ueberschrift, nicht in eine eigene
+        # Zeile — die Blockregel fuer .schritte li span darf nicht greifen.
+        anzeige = await page.evaluate(
+            "getComputedStyle(document.querySelector('#anleitung .marke'))"
+            ".display")
+        assert anzeige == "inline-block", f"Marke bricht um: {anzeige}"
+        await page.screenshot(
+            path=str(Path(tempfile.gettempdir()) / "fe_start.png"))
+
         # 4. Analyse mit Datei
         await page.set_input_files("#file-input", str(hoerprobe))
         await page.wait_for_timeout(500)
@@ -179,6 +196,10 @@ async def main():
         #     und hinter „Optionen“ hat das Feld niemand gefunden.
         assert await page.locator("#num-speakers").is_visible(), \
             "Sprecherzahl nicht ohne Aufklappen sichtbar"
+
+        # Auch am Transkriptfeld selbst muss stehen, dass es optional ist.
+        kopf = await page.locator("#transkript-box summary").inner_text()
+        assert "Bonus" in kopf, f"Transkript nicht als Bonus markiert: {kopf!r}"
         await page.fill("#num-speakers", "3")
 
         await page.click("#btn-analyse")
