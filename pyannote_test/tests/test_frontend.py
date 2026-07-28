@@ -223,6 +223,11 @@ async def main():
         await page.fill("#num-speakers", "3")
 
         await page.click("#btn-analyse")
+        # Vor dem Auftrag darf nicht stehen, man könne die App schließen —
+        # während des Hochladens bricht damit alles ab und es entsteht nie
+        # ein Auftrag. Genau das war der Fehlschlag im echten Betrieb.
+        vorher = await page.locator("#progress-hinweis").inner_text()
+        assert "geöffnet lassen" in vorher, f"falscher Hinweis: {vorher!r}"
         await page.wait_for_timeout(12000)
         assert await page.locator(".sa-bubble").count() == 4, "Sprechblasen fehlen"
         assert "Deutsch" in await page.locator(".sa-meta").inner_text(), \
@@ -271,6 +276,10 @@ async def main():
         auftrag = await page.evaluate("window._auftragStand")
         assert auftrag and auftrag >= 2, \
             f"Auftrag wurde nicht nachverfolgt: {auftrag}"
+        # Und erst danach die Entwarnung.
+        nachher = await page.evaluate(
+            "document.querySelector('#progress-hinweis').textContent")
+        assert "schließen" in nachher, f"keine Entwarnung: {nachher!r}"
         ueber = await querscrollung(page)
         assert ueber == 0, f"Ergebnis scrollt {ueber}px waagerecht"
 

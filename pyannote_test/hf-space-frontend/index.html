@@ -122,9 +122,12 @@
     <div id="progress" class="card center" hidden>
       <div class="spinner"></div>
       <div id="progress-text" class="dim">Analysiere …</div>
-      <div class="dim klein">Läuft seit <span id="progress-zeit">0:00</span>.
-        Die Verarbeitung läuft im Hintergrund weiter — du kannst die App
-        schließen. Wenn sie fertig ist, bekommst du eine Nachricht.</div>
+      <div class="dim klein">Läuft seit <span id="progress-zeit">0:00</span>.</div>
+      <!-- Der Hinweis wechselt, sobald der Auftrag im Space angelegt ist.
+           Vorher wäre „du kannst schließen“ schlicht falsch: bricht der
+           Upload ab, entsteht nie ein Auftrag. -->
+      <div id="progress-hinweis" class="dim klein mitte">Bitte geöffnet
+        lassen, bis die Aufnahme übertragen ist.</div>
     </div>
 
     <div id="ergebnis"></div>

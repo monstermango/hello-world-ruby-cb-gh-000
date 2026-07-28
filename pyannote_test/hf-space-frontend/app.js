@@ -374,6 +374,12 @@ async function analyseRahmen(arbeit) {
   $("#fortsetzen").hidden = true;
   $("#progress").hidden = false;
   $("#ergebnis").innerHTML = "";
+  const hinweis = $("#progress-hinweis");
+  if (hinweis) {
+    hinweis.textContent = "Bitte geöffnet lassen, bis die Aufnahme "
+      + "übertragen ist.";
+    hinweis.classList.remove("frei");
+  }
   const start = Date.now();
   const ticker = setInterval(() => {
     $("#progress-zeit").textContent = zeit((Date.now() - start) / 1000);
@@ -440,6 +446,12 @@ $("#btn-analyse").addEventListener("click", () => {
       toast("Achtung: Auftrag ohne dein HF-Token gestartet.");
     }
     auftragSpeichern(start.auftrag);
+    // Ab jetzt — und keine Sekunde früher — darf die App zu.
+    $("#progress-hinweis").textContent =
+      "Läuft jetzt im Hintergrund. Du kannst die App schließen; "
+      + "wenn sie fertig ist, bekommst du eine Nachricht.";
+    $("#progress-hinweis").classList.add("frei");
+    toast("Läuft im Hintergrund — App darf zu.");
     benachrichtigungAnbieten();
     return await auftragVerfolgen(start.auftrag, melde);
   });

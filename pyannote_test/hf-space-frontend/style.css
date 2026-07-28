@@ -195,6 +195,8 @@ summary b { color: var(--text) }
 .berichtigt { font-weight: 600; text-decoration: none }
 .sa-warn { margin-top: 14px; padding: 10px 14px; border-radius: 10px;
   background: var(--warn-bg); font-size: .9rem }
+#progress-hinweis { max-width: 26em }
+#progress-hinweis.frei { color: var(--primary); font-weight: 600 }
 .gelernt { margin-top: 16px; padding: 10px 14px; border-radius: 10px;
   background: var(--blase); color: var(--dim); font-size: .85rem }
 .md-aktionen { margin-top: 16px }
