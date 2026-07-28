@@ -5,6 +5,7 @@ hier registrierten API-Endpunkte an. Jeder Endpunkt verlangt den
 Zugangsschlüssel (Secret APP_PASS); erst nach der Prüfung wird GPU-Zeit
 verbraucht.
 """
+import contextvars
 import hmac
 import json
 import os
@@ -697,19 +698,40 @@ def _auftrag_lauf(jid, sid, num_speakers, sprache):
         _push_senden("Analyse fehlgeschlagen", str(ex)[:120])
 
 
-def starten_api(key, sid, num_speakers, sprache=None):
+def starten_api(key, sid, num_speakers, sprache=None, request: gr.Request = None):
     """Stößt die Verarbeitung an und gibt sofort zurück."""
     if not _pruefe(key):
         return {"ok": False, "fehler": "Ungültiger Zugangsschlüssel."}
     if not _sitzung(sid):
         return {"ok": False, "fehler": "Sitzung abgelaufen. Bitte erneut starten."}
+
+    # Festhalten, womit gestartet wurde. ZeroGPU rechnet die GPU-Zeit dem
+    # zu, dessen Kennung an der Anfrage hängt; ob sie anlag, soll nicht
+    # Glaubenssache sein, sondern ablesbar.
+    kopf = {}
+    try:
+        kopf = {k.lower(): v for k, v in dict(request.headers).items()}
+    except Exception:
+        pass
+    mit_token = bool(
+        (kopf.get("authorization") or "").lower().startswith("bearer hf_")
+        or kopf.get("x-ip-token"))
+
     jid = secrets.token_urlsafe(12)
     AUFTRAEGE[jid] = {"stand": "laeuft", "schritt": "Sprecher erkennen",
-                      "von": 0, "bis": 1, "sid": sid, "zeit": time.time()}
-    threading.Thread(target=_auftrag_lauf,
-                     args=(jid, sid, num_speakers, sprache),
+                      "von": 0, "bis": 1, "sid": sid, "zeit": time.time(),
+                      "mit_token": mit_token}
+
+    # Den Kontext dieser Anfrage mitnehmen. ZeroGPU ordnet die GPU-Zeit
+    # anhand eines Kopfzeilenwerts zu, den die Hub-Infrastruktur pro
+    # Anfrage setzt — und dieser Aufruf ist die Anfrage des Nutzers, mit
+    # seinem Token. Ein Thread erbt Kontextvariablen nicht von allein;
+    # ohne das Kopieren fiele die Zuordnung an der Threadgrenze weg.
+    ctx = contextvars.copy_context()
+    threading.Thread(target=ctx.run,
+                     args=(_auftrag_lauf, jid, sid, num_speakers, sprache),
                      daemon=True).start()
-    return {"ok": True, "auftrag": jid}
+    return {"ok": True, "auftrag": jid, "mit_token": mit_token}
 
 
 def auftrag_api(key, jid):

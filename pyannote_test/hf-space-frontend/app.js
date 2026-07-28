@@ -393,6 +393,11 @@ $("#btn-analyse").addEventListener("click", () => {
     const start = await rufeHartnaeckig("/starten",
                                         [schluessel, vor.id, n, spr]);
     if (!start.ok) throw new Error(start.fehler);
+    // Ohne Kennung an der Startanfrage läuft die GPU-Zeit nicht über dein
+    // Konto. Das soll auffallen, bevor die Aufnahme durchgelaufen ist.
+    if (start.mit_token === false && hfToken) {
+      toast("Achtung: Auftrag ohne dein HF-Token gestartet.");
+    }
     auftragSpeichern(start.auftrag);
     benachrichtigungAnbieten();
     return await auftragVerfolgen(start.auftrag, melde);
