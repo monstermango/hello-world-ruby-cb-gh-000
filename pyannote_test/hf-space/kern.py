@@ -53,6 +53,27 @@ def _decode_optionen(sprache=None):
     return gk
 
 
+def restzeit(verstrichen, getan, gesamt, dauer_audio=None):
+    """Schätzt, wie lange der Auftrag noch braucht — in Sekunden.
+
+    Sobald ein Abschnitt fertig ist, wird aus dessen Tempo hochgerechnet;
+    das ist ehrlicher als jede Vorabformel, weil es die tatsächliche
+    Warteschlange und Gerätelast enthält. Vorher bleibt nur eine grobe
+    Schätzung aus der Audiolänge — als solche gekennzeichnet, damit
+    niemand eine Genauigkeit annimmt, die es nicht gibt.
+    """
+    if gesamt <= 0 or getan >= gesamt:
+        return None, "fertig"
+    if getan > 0:
+        pro = verstrichen / getan
+        return max(0.0, pro * (gesamt - getan)), "gemessen"
+    if dauer_audio:
+        # Erfahrungswert der Kette: ungefähr ein Fünftel der Audiolänge,
+        # plus Vorlauf für die Sprechererkennung.
+        return max(0.0, dauer_audio * 0.2 + 30.0 - verstrichen), "geschätzt"
+    return None, "unbekannt"
+
+
 # Gleichzeitiges Sprechen
 UEBERLAPP_MIN = 1.0       # kürzeres ist normales Dazwischenreden
 UEBERLAPP_LUECKE = 5.0    # dichter beieinander gehört zu einer Passage

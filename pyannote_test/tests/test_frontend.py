@@ -55,7 +55,12 @@ export class Client {
       frontmatter: {titel: "Aufnahme 2026-07-25 07:04"},
       body: "# Aufnahme\\n\\n## Redeanteile\\n\\n| Sprecher | Anteil |\\n|---|---|\\n| Sprecher 1 | 58 % |",
       markdown: "---\\ntitel: x\\n---\\n# Aufnahme"}]};
-    if (ep === "/vorbereiten") return {data: [{ok: true, id: "sid1", dauer: 23.4, modus: daten[2] ? "transkript" : "erkennung", woerter: (daten[2]||"").split(/\s+/).filter(Boolean).length}]};
+    if (ep === "/vorbereiten") {
+      // Bewusst langsam: das Hochladen dauert in Wirklichkeit, und nur
+      // waehrend dieser Zeit laesst sich pruefen, was der Hinweis sagt.
+      await new Promise((f) => setTimeout(f, 1500));
+      return {data: [{ok: true, id: "sid1", dauer: 23.4, modus: daten[2] ? "transkript" : "erkennung", woerter: (daten[2]||"").split(/\s+/).filter(Boolean).length}]};
+    }
     if (ep === "/diarisieren") { window._diarNum = daten[2]; return {data: [{ok: true, sprecher: 2, abschnitte: 3}]}; }
     if (ep === "/transkribieren") {
       window._abschnitte = (window._abschnitte || 0) + 1;
@@ -229,14 +234,14 @@ async def main():
         # Der Hinweis muss zur Wirklichkeit passen: läuft der Wachton,
         # darf man gehen; läuft er nicht, bricht das Verlassen den Upload
         # ab und der Hinweis muss das sagen.
-        await page.wait_for_timeout(400)
+        # Waehrend des Hochladens — der Auftrag existiert noch nicht.
+        await page.wait_for_timeout(500)
         vorher = await page.evaluate(
             "document.querySelector('#progress-hinweis').textContent")
-        wach = await page.evaluate(
-            "Boolean(window.__wach) || !document.querySelector"
-            "('#progress-hinweis').classList.contains('frei')")
         assert ("verlassen" in vorher) or ("geöffnet lassen" in vorher), \
             f"Hinweis passt zu keinem der beiden Fälle: {vorher!r}"
+        assert "im Space" not in vorher, \
+            f"behauptet den Auftrag, bevor es ihn gibt: {vorher!r}"
         await page.wait_for_timeout(12000)
         assert await page.locator(".sa-bubble").count() == 4, "Sprechblasen fehlen"
         assert "Deutsch" in await page.locator(".sa-meta").inner_text(), \

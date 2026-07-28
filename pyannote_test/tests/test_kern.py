@@ -223,6 +223,39 @@ def test_bestaetigte_korrektur_schlaegt_die_aehnlichkeit():
     assert "Martha" in neu[0]["text"]
 
 
+# ---------- Restzeit ----------
+
+def test_ohne_fortschritt_wird_aus_der_audiolaenge_geschaetzt():
+    rest, art = kern.restzeit(10.0, 0, 5, dauer_audio=600.0)
+    assert art == "geschätzt" and rest > 0
+
+
+def test_mit_fortschritt_wird_gemessen_statt_geraten():
+    # Zwei von vier Abschnitten in 100 s -> noch etwa 100 s.
+    rest, art = kern.restzeit(100.0, 2, 4)
+    assert art == "gemessen" and abs(rest - 100.0) < 1e-6
+
+
+def test_die_messung_schlaegt_die_schaetzung():
+    # Sobald echte Zahlen da sind, darf die Vorabformel nicht mehr zaehlen.
+    _, art = kern.restzeit(100.0, 2, 4, dauer_audio=99999.0)
+    assert art == "gemessen"
+
+
+def test_am_ende_gibt_es_keine_restzeit():
+    assert kern.restzeit(50.0, 4, 4)[0] is None
+
+
+def test_ohne_jede_grundlage_wird_nichts_behauptet():
+    rest, art = kern.restzeit(5.0, 0, 3)
+    assert rest is None and art == "unbekannt"
+
+
+def test_restzeit_wird_nie_negativ():
+    rest, _ = kern.restzeit(9999.0, 0, 5, dauer_audio=60.0)
+    assert rest >= 0.0
+
+
 # ---------- Messung ----------
 
 def test_gleicher_text_hat_keine_fehler():

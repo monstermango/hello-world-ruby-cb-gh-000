@@ -43,6 +43,7 @@ from kern import (FA_ANTEIL, FA_BLOCK, FA_FENSTER, FARBEN, FENSTER,
                   _frontmatter, _kontext_bauen, _markdown, _namen_farben,
                   _rangfolge, _romanisieren, _sprecher_bei, _zeit,
                   _zusammenfuegen, glossar_lesen, glossar_schreiben,
+                  restzeit,
                   pfad_erlaubt)
 
 HF_TOKEN = os.environ["HF_TOKEN"]
@@ -683,7 +684,10 @@ def _auftrag_lauf(jid, sid, num_speakers, sprache):
         if not r.get("ok"):
             raise RuntimeError(r.get("fehler", "Sprechererkennung fehlgeschlagen"))
         gesamt = max(1, int(r.get("abschnitte") or 1))
-        j.update(stand="laeuft", schritt="Text erkennen", von=0, bis=gesamt)
+        rest, art = restzeit(time.time() - j["begonnen"], 0, gesamt,
+                             (_sitzung(sid) or {}).get("dauer"))
+        j.update(stand="laeuft", schritt="Text erkennen", von=0, bis=gesamt,
+                 rest_s=rest, rest_art=art)
 
         i, getan = 0, 0
         while True:
@@ -691,7 +695,9 @@ def _auftrag_lauf(jid, sid, num_speakers, sprache):
             if not a.get("ok"):
                 raise RuntimeError(a.get("fehler", "Transkription fehlgeschlagen"))
             getan += 1
-            j.update(von=min(getan, gesamt))
+            rest, art = restzeit(time.time() - j["begonnen"], getan, gesamt,
+                                 (_sitzung(sid) or {}).get("dauer"))
+            j.update(von=min(getan, gesamt), rest_s=rest, rest_art=art)
             if not a.get("weiter"):
                 break
             # Beim Einpassen zählt das Backend selbst weiter, bei der
@@ -751,7 +757,7 @@ def starten_api(key, sid, num_speakers, sprache=None, request: gr.Request = None
     jid = secrets.token_urlsafe(12)
     AUFTRAEGE[jid] = {"stand": "laeuft", "schritt": "Sprecher erkennen",
                       "von": 0, "bis": 1, "sid": sid, "zeit": time.time(),
-                      "mit_token": mit_token}
+                      "begonnen": time.time(), "mit_token": mit_token}
 
     # Den Kontext dieser Anfrage mitnehmen. ZeroGPU ordnet die GPU-Zeit
     # anhand eines Kopfzeilenwerts zu, den die Hub-Infrastruktur pro

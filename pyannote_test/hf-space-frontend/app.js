@@ -454,8 +454,9 @@ $("#btn-analyse").addEventListener("click", () => {
       toast("Achtung: Auftrag ohne dein HF-Token gestartet.");
     }
     auftragSpeichern(start.auftrag);
-    // Übertragen. Ab hier trägt der Space allein, der Wachton kann weg.
-    wachEnde();
+    // Die Spur läuft weiter — nicht mehr, um den Upload zu retten, sondern
+    // damit Sperrbildschirm und Dynamic Island den Fortschritt zeigen.
+    wachTexte("Analyse läuft", "Wird übertragen …");
     $("#progress-hinweis").textContent =
       "Läuft jetzt im Space. Du kannst die App schließen; wenn sie fertig "
       + "ist, bekommst du eine Nachricht.";
@@ -507,6 +508,43 @@ async function wachHalten() {
 
 function wachEnde() {
   if (wachton) { wachton.pause(); }
+  if ("mediaSession" in navigator) {
+    navigator.mediaSession.playbackState = "none";
+    navigator.mediaSession.metadata = null;
+  }
+}
+
+// Solange die stille Spur läuft, führt iOS die App als „Wiedergabe“ —
+// auf dem Sperrbildschirm und in der Dynamic Island. Was dort steht,
+// kommt aus der Media-Session. Echte Live Activities mit Fortschritts-
+// balken bräuchten eine native App; das hier ist, was das Web hergibt.
+function wachTexte(titel, zeile) {
+  if (!("mediaSession" in navigator) || !window.MediaMetadata) return;
+  try {
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: titel,
+      artist: zeile,
+      album: "Sprecher-Analyse",
+      artwork: [{ src: "icon-192.png", sizes: "192x192", type: "image/png" },
+                { src: "icon-512.png", sizes: "512x512", type: "image/png" }],
+    });
+    navigator.mediaSession.playbackState = "playing";
+    // Pause beendet nur die Anzeige. Der Auftrag läuft im Space weiter —
+    // deshalb ist das gefahrlos, und wer Musik hören will, kommt hier raus.
+    navigator.mediaSession.setActionHandler("pause", () => {
+      wachEnde();
+      toast("Anzeige beendet — die Analyse läuft weiter.");
+    });
+  } catch (e) { /* Anzeige ist Zugabe */ }
+}
+
+// „noch 7 min“ statt „0.42“ — und ohne Nachkommastellen, die eine
+// Genauigkeit vortäuschen, die die Schätzung nicht hat.
+function restText(sekunden, art) {
+  if (sekunden === null || sekunden === undefined) return "";
+  const m = Math.max(0, Math.round(sekunden / 60));
+  const wert = m >= 1 ? `noch ~${m} min` : "gleich fertig";
+  return art === "geschätzt" ? `${wert} (grob)` : wert;
 }
 
 // ---------- Aufträge ----------
@@ -540,7 +578,11 @@ async function auftragVerfolgen(jid, melde) {
       throw new Error(j.fehler || "Verarbeitung fehlgeschlagen");
     }
     const von = j.von || 0, bis = j.bis || 1;
-    melde(bis > 1 ? `${j.schritt} … ${von}/${bis}` : `${j.schritt} …`);
+    const rest = restText(j.rest_s, j.rest_art);
+    const fortschritt = bis > 1 ? `${von}/${bis}` : "";
+    melde([j.schritt, fortschritt, rest].filter(Boolean).join(" · "));
+    wachTexte(rest || "Analyse läuft",
+              [j.schritt, fortschritt].filter(Boolean).join(" · "));
     await new Promise((f) => setTimeout(f, 4000));
   }
 }
