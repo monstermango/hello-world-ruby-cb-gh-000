@@ -145,6 +145,27 @@ $("#btn-login").addEventListener("click", async () => {
   }
 });
 
+$("#btn-push-test").addEventListener("click", async () => {
+  const feld = $("#push-status");
+  feld.textContent = "Melde dieses Gerät an …";
+  await benachrichtigungAnbieten();
+  feld.textContent = "Sende Probe …";
+  try {
+    const d = await rufe("/push_pruefen", [schluessel]);
+    if (d.ok) {
+      feld.textContent = `Gesendet an ${d.zugestellt} von ${d.geraete} `
+        + `Gerät(en). Kommt gleich keine Nachricht an, ist die Zustellung `
+        + `das Problem, nicht die Einrichtung.`;
+    } else {
+      feld.textContent = `Fehlgeschlagen: ${d.fehler}`
+        + (d.bibliothek && d.bibliothek !== "bereit" ? ` (${d.bibliothek})` : "")
+        + ((d.meldungen || []).length ? ` — ${d.meldungen[0]}` : "");
+    }
+  } catch (e) {
+    feld.textContent = "Fehlgeschlagen: " + e.message;
+  }
+});
+
 $("#key-input").addEventListener("keydown", (e) => {
   if (e.key === "Enter") $("#btn-login").click();
 });

@@ -800,14 +800,27 @@ def _push_oeffentlich():
     return base64.urlsafe_b64encode(roh).decode().rstrip("=")
 
 
+def _push_bereit():
+    """Ist die Versandbibliothek überhaupt da? -> (ja, Grund)
+
+    pywebpush zieht http-ece nach, das eine Erweiterung baut. Scheitert
+    das beim Aufbau des Space, wäre Push still tot — der Fehler fiele
+    erst auf, wenn eine erwartete Nachricht ausbleibt. Deshalb abfragbar.
+    """
+    try:
+        import pywebpush  # noqa: F401
+        return True, "bereit"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+
 def _push_senden(titel, text):
-    """Verschickt an alle angemeldeten Geräte. Fehler bleiben folgenlos."""
+    """Verschickt an alle angemeldeten Geräte. -> (zugestellt, Fehler)"""
     try:
         from pywebpush import webpush, WebPushException
-    except ImportError:
-        return
-    z = _push_zustand()
-    uebrig, geaendert = [], False
+    except Exception as e:
+        return 0, [f"Versandbibliothek fehlt: {e}"]
+    uebrig, geaendert, zugestellt, fehler = [], False, 0, []
     for abo in z.get("abos", []):
         try:
             webpush(subscription_info=abo,
@@ -815,6 +828,7 @@ def _push_senden(titel, text):
                     vapid_private_key=z["vapid_pem"],
                     vapid_claims={"sub": "mailto:app@example.invalid"})
             uebrig.append(abo)
+            zugestellt += 1
         except WebPushException as e:
             # 404/410 heißt: Gerät hat abgemeldet. Eintrag darf weg.
             code = getattr(getattr(e, "response", None), "status_code", None)
@@ -822,14 +836,17 @@ def _push_senden(titel, text):
                 geaendert = True
             else:
                 uebrig.append(abo)
-        except Exception:
+            fehler.append(f"{code or ''} {e}".strip()[:200])
+        except Exception as e:
             uebrig.append(abo)
+            fehler.append(f"{type(e).__name__}: {e}"[:200])
     if geaendert:
         z["abos"] = uebrig
         try:
             _push_sichern(z)
         except Exception:
             traceback.print_exc()
+    return zugestellt, fehler
 
 
 def push_schluessel_api(key):
@@ -839,6 +856,27 @@ def push_schluessel_api(key):
         return {"ok": True, "schluessel": _push_oeffentlich()}
     except Exception as e:
         return {"ok": False, "fehler": str(e)}
+
+
+def push_pruefen_api(key):
+    """Schickt eine Probe-Benachrichtigung und sagt, was dabei geschah."""
+    if not _pruefe(key):
+        return {"ok": False, "fehler": "Ungültiger Zugangsschlüssel."}
+    bereit, grund = _push_bereit()
+    try:
+        geraete = len(_push_zustand().get("abos", []))
+    except Exception as e:
+        return {"ok": False, "fehler": f"Push-Zustand nicht lesbar: {e}"}
+    if not bereit:
+        return {"ok": False, "bibliothek": grund, "geraete": geraete,
+                "fehler": "Versandbibliothek fehlt im Space."}
+    if not geraete:
+        return {"ok": False, "bibliothek": grund, "geraete": 0,
+                "fehler": "Kein Gerät angemeldet."}
+    zugestellt, fehler = _push_senden(
+        "Probe", "Wenn du das liest, funktionieren Benachrichtigungen.")
+    return {"ok": zugestellt > 0, "bibliothek": grund, "geraete": geraete,
+            "zugestellt": zugestellt, "meldungen": fehler}
 
 
 def push_anmelden_api(key, abo):
@@ -1230,6 +1268,8 @@ with gr.Blocks(title="Sprecher-Analyse API") as demo:
             api_name="auftrag")
         gr.Button("Push-Schlüssel").click(
             push_schluessel_api, [key], gr.JSON(), api_name="push_schluessel")
+        gr.Button("Push prüfen").click(
+            push_pruefen_api, [key], gr.JSON(), api_name="push_pruefen")
         gr.Button("Push anmelden").click(
             push_anmelden_api, [key, gr.JSON(label="Abo")], gr.JSON(),
             api_name="push_anmelden")
