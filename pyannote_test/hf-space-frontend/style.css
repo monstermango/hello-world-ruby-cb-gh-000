@@ -107,6 +107,8 @@ details { margin: 8px 0 }
 /* Kein Flex: sonst werden Auszeichnungen im Text zu eigenen Spalten */
 summary { min-height: 44px; padding: 11px 0; color: var(--dim) }
 summary b { color: var(--text) }
+/* Der Zusatz gehört unter die Beschriftung, nicht daneben. */
+.opt .klein { display: block; margin-top: 0 }
 .opt input {
   width: 76px; min-height: 44px; text-align: center; font: inherit;
   border: 1px solid var(--linie); border-radius: 10px;

@@ -44,7 +44,7 @@ export class Client {
       body: "# Aufnahme\\n\\n## Redeanteile\\n\\n| Sprecher | Anteil |\\n|---|---|\\n| Sprecher 1 | 58 % |",
       markdown: "---\\ntitel: x\\n---\\n# Aufnahme"}]};
     if (ep === "/vorbereiten") return {data: [{ok: true, id: "sid1", dauer: 23.4, modus: daten[2] ? "transkript" : "erkennung", woerter: (daten[2]||"").split(/\s+/).filter(Boolean).length}]};
-    if (ep === "/diarisieren") return {data: [{ok: true, sprecher: 2, abschnitte: 3}]};
+    if (ep === "/diarisieren") { window._diarNum = daten[2]; return {data: [{ok: true, sprecher: 2, abschnitte: 3}]}; }
     if (ep === "/transkribieren") {
       window._abschnitte = (window._abschnitte || 0) + 1;
       return {data: [{ok: true, index: daten[2], abschnitte: 3, weiter: window._abschnitte < 3}]};
@@ -173,6 +173,14 @@ async def main():
         await page.set_input_files("#file-input", str(hoerprobe))
         await page.wait_for_timeout(500)
         assert await page.locator("#audio-panel").is_visible(), "Audio-Panel fehlt"
+
+        # 4a. Die Sprecherzahl muss ohne Aufklappen erreichbar sein — die
+        #     automatische Schätzung erkennt regelmäßig zu viele Sprecher,
+        #     und hinter „Optionen“ hat das Feld niemand gefunden.
+        assert await page.locator("#num-speakers").is_visible(), \
+            "Sprecherzahl nicht ohne Aufklappen sichtbar"
+        await page.fill("#num-speakers", "3")
+
         await page.click("#btn-analyse")
         await page.wait_for_timeout(1000)
         assert await page.locator(".sa-bubble").count() == 4, "Sprechblasen fehlen"
@@ -183,6 +191,9 @@ async def main():
             f"Token nicht an den Client übergeben: {opt}"
         abschnitte = await page.evaluate("window._abschnitte")
         assert abschnitte == 3, f"Nicht alle Abschnitte geholt: {abschnitte}"
+        gewuenscht = await page.evaluate("window._diarNum")
+        assert gewuenscht == 3, \
+            f"Sprecherzahl nicht ans Backend durchgereicht: {gewuenscht}"
         ueber = await querscrollung(page)
         assert ueber == 0, f"Ergebnis scrollt {ueber}px waagerecht"
 

@@ -74,6 +74,15 @@
         <div id="transkript-info" class="dim klein"></div>
       </details>
 
+      <!-- Sichtbar statt unter „Optionen“: die automatische Schätzung
+           erkennt regelmäßig zu viele Sprecher, und wer das Meeting
+           aufgenommen hat, weiß die Zahl. -->
+      <label class="row opt">
+        <span class="grow">Anzahl Sprecher
+          <span class="dim klein">0 = automatisch schätzen</span></span>
+        <input id="num-speakers" type="number" min="0" max="8" value="0" inputmode="numeric">
+      </label>
+
       <details>
         <summary>Optionen</summary>
         <label class="opt-block">
@@ -91,10 +100,6 @@
             <option value="turkish">Türkisch</option>
             <option value="">Automatisch</option>
           </select>
-        </label>
-        <label class="row opt">
-          <span class="grow">Anzahl Sprecher (0 = automatisch)</span>
-          <input id="num-speakers" type="number" min="0" max="8" value="0" inputmode="numeric">
         </label>
       </details>
       <button id="btn-analyse" class="primary">Analysieren</button>
