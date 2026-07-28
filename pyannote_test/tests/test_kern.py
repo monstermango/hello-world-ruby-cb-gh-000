@@ -84,6 +84,145 @@ def test_ohne_erkannten_text_bleibt_die_sprecherstruktur():
     assert all(s["text"] is None for s in daten["segmente"])
 
 
+# ---------- Abgleich zweier Erkennungen ----------
+
+def test_einigkeit_erzeugt_keine_markierung():
+    assert kern.abgleich(["guten", "tag"], ["Guten", "Tag!"]) == []
+
+
+def test_widerspruch_wird_benannt():
+    s = kern.abgleich(["die", "martha", "kam"], ["die", "marta", "kam"])
+    assert len(s) == 1
+    assert s[0]["index"] == 1 and s[0]["wort"] == "martha"
+    assert s[0]["gehoert"] == "marta"
+
+
+def test_fehlendes_wort_gilt_als_strittig():
+    s = kern.abgleich(["a", "bcd", "e"], ["a", "e"])
+    assert [x["wort"] for x in s] == ["bcd"] and s[0]["gehoert"] is None
+
+
+def test_der_wortlaut_wird_nie_veraendert():
+    # Der Abgleich markiert, er ersetzt nicht — keine der beiden Quellen
+    # ist die Wahrheit.
+    vorlage = ["die", "martha", "kam"]
+    kern.abgleich(vorlage, ["die", "marta", "kam"])
+    assert vorlage == ["die", "martha", "kam"]
+
+
+def test_ohne_zweite_erkennung_keine_behauptung():
+    assert kern.abgleich(["a", "b"], []) == []
+
+
+# ---------- Konfidenz ----------
+
+def test_schwacher_alignmentwert_gilt_als_unsicher():
+    c = kern._konfidenz_markieren([{"text": "x", "wert": 0.2},
+                                   {"text": "y", "wert": 0.95}])
+    assert c[0]["unsicher"] and not c[1]["unsicher"]
+
+
+def test_widerspruch_macht_unsicher_trotz_gutem_wert():
+    c = kern._konfidenz_markieren([{"text": "x", "wert": 0.99}], {0})
+    assert c[0]["unsicher"], "der Widerspruch der zweiten Erkennung zählt auch"
+
+
+def test_fehlender_wert_macht_nicht_unsicher():
+    # Keine Angabe ist kein Verdacht; sonst wäre alles grau.
+    assert not kern._konfidenz_markieren([{"text": "x"}])[0]["unsicher"]
+
+
+def test_unsicherheit_landet_als_position_im_segment():
+    chunks = [{"start": 0.0, "ende": 1.0, "text": "Guten", "unsicher": False},
+              {"start": 1.0, "ende": 2.0, "text": "Tag", "unsicher": True}]
+    daten = kern._zusammenfuegen([_turn(0, 5)], {"A": {"dauer": 5, "turns": 1}},
+                                 [], chunks, 5.0)
+    seg = daten["segmente"][0]
+    assert seg["text"] == "Guten Tag", "der Wortlaut bleibt unversehrt"
+    assert seg["unsicher"] == [1], "markiert wird über die Position"
+
+
+# ---------- Stimmabdrücke ----------
+
+def test_gleiche_stimme_wird_wiedererkannt():
+    bekannt = {"Martha": [1.0, 0.0, 0.0], "Nils": [0.0, 1.0, 0.0]}
+    zu = kern.stimmen_zuordnen({"A": [0.98, 0.02, 0.0]}, bekannt)
+    assert zu == {"A": "Martha"}
+
+
+def test_fremde_stimme_bleibt_unbenannt():
+    bekannt = {"Martha": [1.0, 0.0, 0.0]}
+    assert kern.stimmen_zuordnen({"A": [0.0, 0.0, 1.0]}, bekannt) == {}
+
+
+def test_zwei_aehnliche_stimmen_werden_nicht_geraten():
+    # Ohne deutlichen Vorsprung lieber gar kein Name: ein falscher Name
+    # im Protokoll fällt beim Lesen kaum auf.
+    bekannt = {"Anna": [1.0, 0.0], "Anne": [0.999, 0.045]}
+    assert kern.stimmen_zuordnen({"A": [1.0, 0.02]}, bekannt) == {}
+
+
+def test_ein_name_wird_nicht_zweimal_vergeben():
+    bekannt = {"Martha": [1.0, 0.0, 0.0]}
+    zu = kern.stimmen_zuordnen({"A": [1.0, 0.0, 0.0], "B": [0.99, 0.01, 0.0]},
+                               bekannt)
+    assert list(zu.values()) == ["Martha"]
+
+
+def test_abdruck_wird_gemittelt_nicht_ueberschrieben():
+    # Eine Aufnahme mit Schnupfen darf die gespeicherte Stimme nicht
+    # umwerfen.
+    neu = kern.stimmen_auffrischen({"Martha": [1.0, 0.0]},
+                                   {"A": [0.0, 1.0]}, {"A": "Martha"})
+    assert neu["Martha"][0] > 0.5, f"zu stark verschoben: {neu['Martha']}"
+
+
+def test_unbekannter_name_wird_neu_angelegt():
+    neu = kern.stimmen_auffrischen({}, {"A": [1.0, 0.0]}, {"A": "Hedi"})
+    assert neu["Hedi"] == [1.0, 0.0]
+
+
+# ---------- Aufnahmequalität ----------
+
+def test_sauberes_signal_gilt_als_gut():
+    u = kern.aufnahme_urteil({"sprache_db": -20.0, "rausch_db": -55.0})
+    assert u["stufe"] == "gut" and u["rat"] == []
+
+
+def test_zu_grosser_abstand_wird_erkannt_und_erklaert():
+    u = kern.aufnahme_urteil({"sprache_db": -30.0, "rausch_db": -38.0})
+    assert u["stufe"] == "schlecht"
+    assert any("näher" in r for r in u["rat"]), u["rat"]
+
+
+def test_uebersteuerung_wird_gemeldet():
+    u = kern.aufnahme_urteil({"sprache_db": -12.0, "rausch_db": -50.0,
+                              "uebersteuert": 0.03})
+    assert any("übersteuert" in r for r in u["rat"]), u["rat"]
+
+
+def test_urteil_ohne_messwerte_stuerzt_nicht_ab():
+    assert kern.aufnahme_urteil({})["stufe"] in ("gut", "grenzwertig",
+                                                 "schlecht")
+
+
+# ---------- Bestätigte Korrekturen ----------
+
+def test_bestaetigte_korrektur_gilt_ohne_aehnlichkeitspruefung():
+    # Vom Nutzer bestätigt heißt: unbedingt. Auch wenn die Wörter weit
+    # auseinanderliegen und der Anfangsbuchstabe nicht passt.
+    neu, prot = kern._korrigieren(_seg("Wir sprachen mit Kolleschin"), [],
+                                  {"kolleschin": "Kollegin"})
+    assert "Kollegin" in neu[0]["text"]
+    assert prot[0]["nachher"] == "Kollegin"
+
+
+def test_bestaetigte_korrektur_schlaegt_die_aehnlichkeit():
+    neu, _ = kern._korrigieren(_seg("Marta kam"), ["Martina"],
+                               {"marta": "Martha"})
+    assert "Martha" in neu[0]["text"]
+
+
 # ---------- Messung ----------
 
 def test_gleicher_text_hat_keine_fehler():
@@ -470,10 +609,14 @@ def test_glossar_faellt_haeufigstes_zuerst():
 
 def test_glossar_schreiben_und_lesen_ist_verlustfrei():
     zaehler = {"Entwicklungsgespräch": 12, "Kita": 4}
-    text, geordnet = kern.glossar_schreiben(zaehler, ["Nils", "Anna"])
+    festen = {"marta": "Martha"}
+    text, geordnet = kern.glossar_schreiben(zaehler, ["Nils", "Anna"], festen)
     assert geordnet == ["Entwicklungsgespräch", "Kita"]
-    gelesen, sprecher = kern.glossar_lesen(text)
+    gelesen, sprecher, gelesen_festen = kern.glossar_lesen(text)
     assert gelesen == zaehler and sprecher == ["Nils", "Anna"]
+    # Bestätigte Korrekturen sind die einzige Wahrheit von außen — sie
+    # dürfen beim Speichern nicht verlorengehen.
+    assert gelesen_festen == festen
 
 
 def test_glossar_wird_gedeckelt():

@@ -187,6 +187,12 @@ summary b { color: var(--text) }
 .sa-msg-head { font-size: .78rem; color: var(--dim); margin-bottom: 3px }
 .sa-bubble { background: var(--blase); padding: 10px 14px;
   border-radius: 12px; overflow-wrap: anywhere }
+/* Unsichere Wörter: erkennbar, aber nicht schreiend — man soll den Text
+   weiter lesen können und trotzdem sehen, wo er wackelt. */
+.wackelig { color: var(--dim); text-decoration: underline dotted;
+  text-underline-offset: 3px; cursor: pointer }
+.wackelig:active { opacity: .6 }
+.berichtigt { font-weight: 600; text-decoration: none }
 .sa-warn { margin-top: 14px; padding: 10px 14px; border-radius: 10px;
   background: var(--warn-bg); font-size: .9rem }
 .gelernt { margin-top: 16px; padding: 10px 14px; border-radius: 10px;

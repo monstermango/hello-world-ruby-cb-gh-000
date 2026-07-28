@@ -475,6 +475,18 @@ function ergebnisAnzeigen(d, gespeichert) {
   const zeitleiste = `<div class="sa-timeline">${lanes}` +
     `<div class="sa-ticks"><span>0:00</span><span>${zeit(dauer)}</span></div></div>`;
 
+  // Unsichere Wörter werden gekennzeichnet statt stillschweigend so
+  // sicher dargestellt wie der Rest. Antippen berichtigt sie — das ist
+  // zugleich der einzige Weg, auf dem echtes Wissen ins System kommt.
+  const wortlaut = (s) => {
+    const unsicher = new Set(s.unsicher || []);
+    if (!unsicher.size) return esc(s.text);
+    return s.text.split(/\s+/).map((w, i) => unsicher.has(i)
+      ? `<span class="wackelig" data-wort="${esc(w)}" role="button"
+              tabindex="0" title="Antippen zum Berichtigen">${esc(w)}</span>`
+      : esc(w)).join(" ");
+  };
+
   let gespraech = `<div class="sa-h">Gespräch</div>`;
   for (const s of daten.segmente) {
     if (!s.text) continue;
@@ -482,7 +494,7 @@ function ergebnisAnzeigen(d, gespeichert) {
       `<div class="sa-msg"><div class="sa-rail" style="background:${farben[s.label]}"></div>` +
       `<div class="sa-msg-body"><div class="sa-msg-head">${esc(namen[s.label])} · ` +
       `${zeit(s.start)}–${zeit(s.ende)}</div>` +
-      `<div class="sa-bubble">${esc(s.text)}</div></div></div>`;
+      `<div class="sa-bubble">${wortlaut(s)}</div></div></div>`;
   }
 
   // Das Glossar pflegt sich selbst — hier wird nur nachvollziehbar, dass
@@ -507,6 +519,17 @@ function ergebnisAnzeigen(d, gespeichert) {
       `${k}${rest}.</div>`;
   }
 
+  // Was nicht im Signal steckt, holt kein Modell zurück. Diese Grenze
+  // war bisher unsichtbar — bei schlechtem Ergebnis blieb offen, ob das
+  // Werkzeug oder die Aufnahme schuld war.
+  let qualitaet = "";
+  const q = d.qualitaet || daten.qualitaet;
+  if (q && q.stufe !== "gut") {
+    qualitaet = `<div class="sa-warn w-audio">🎙️ Aufnahmequalität ${
+      q.stufe === "schlecht" ? "schwach" : "grenzwertig"} ` +
+      `(Störabstand ${q.snr_db} dB). ${q.rat.map(esc).join(" ")}</div>`;
+  }
+
   // Das Backend liefert bereits nur noch die nennenswerten Passagen. Hier
   // wird zusätzlich gekappt: eine Warnung, die man zu Ende scrollen muss,
   // liest niemand.
@@ -516,7 +539,7 @@ function ergebnisAnzeigen(d, gespeichert) {
     const stellen = daten.overlaps.slice(0, ZEIGE)
       .map((o) => `${zeit(o.start)}–${zeit(o.ende)}`).join(", ");
     const rest = daten.overlaps.length - ZEIGE;
-    hinweis = `<div class="sa-warn">⚠️ Hier haben mehrere gleichzeitig ` +
+    hinweis = `<div class="sa-warn w-overlap">⚠️ Hier haben mehrere gleichzeitig ` +
       `gesprochen — der Wortlaut ist dort unsicher: ${stellen}` +
       `${rest > 0 ? ` und ${rest} weitere` : ""}.</div>`;
   }
@@ -543,6 +566,9 @@ function ergebnisAnzeigen(d, gespeichert) {
         `<span class="punkt" style="background:${farben[lb]}"></span>` +
         `<input class="namen-feld" data-label="${esc(lb)}" type="text" ` +
         (bekannte.length ? `list="namen-liste" ` : "") +
+        // Wiedererkannte Stimme: Name steht schon drin, statt ihn jede
+        // Woche neu zu tippen.
+        ((d.vorschlag || {})[lb] ? `value="${esc(d.vorschlag[lb])}" ` : "") +
         `placeholder="${esc(namen[lb])}" autocomplete="off"></label>`;
     }
 
@@ -557,7 +583,7 @@ function ergebnisAnzeigen(d, gespeichert) {
   // Meeting soll man dafür nicht durch das ganze Protokoll scrollen.
   $("#ergebnis").innerHTML =
     `<div class="card">${meta}<div class="sa-bar">${balken}</div>` +
-    `<div class="sa-legs">${legende}</div>${abschluss}` +
+    `<div class="sa-legs">${legende}</div>${qualitaet}${abschluss}` +
     `${zeitleiste}${gespraech}${hinweis}${gelernt}</div>`;
 
   if (gespeichert) {
@@ -582,7 +608,32 @@ function ergebnisAnzeigen(d, gespeichert) {
   } else {
     $("#btn-speichern").addEventListener("click", speichern);
   }
+
+  // Ein angetipptes Wort berichtigen. Das ist der einzige Eingang, über
+  // den Wissen von außen ins System kommt — bisher lernte das Glossar
+  // ausschließlich aus der eigenen Ausgabe und konnte damit nur die
+  // eigenen Fehler bestätigen.
+  for (const el of document.querySelectorAll(".wackelig")) {
+    el.addEventListener("click", () => berichtigen(el));
+  }
 }
+
+async function berichtigen(el) {
+  const falsch = el.dataset.wort;
+  const richtig = (prompt(`Statt „${falsch}“ richtig:`, falsch) || "").trim();
+  if (!richtig || richtig === falsch) return;
+  el.textContent = richtig;
+  el.classList.remove("wackelig");
+  el.classList.add("berichtigt");
+  try {
+    const d = await rufe("/lernen", [schluessel, falsch, richtig]);
+    toast(d.ok ? `Gemerkt: „${falsch}“ → „${richtig}“`
+               : (d.fehler || "Konnte nicht gemerkt werden."));
+  } catch (e) {
+    toast("Konnte nicht gemerkt werden: " + e.message);
+  }
+}
+
 
 async function speichern() {
   if (!letzteAnalyse) return;

@@ -188,12 +188,17 @@ def _zusammenfuegen(turns, stats, overlaps, chunks, gesamt, sprache=None):
                 and wort["start"] - letztes["ende"] < 2.0):
             letztes["ende"] = wort["ende"]
             letztes["worte"].append(wort["text"])
+            letztes["unsicher"].append(bool(wort.get("unsicher")))
         else:
             segmente.append({"start": wort["start"], "ende": wort["ende"],
-                             "label": label, "worte": [wort["text"]]})
+                             "label": label, "worte": [wort["text"]],
+                             "unsicher": [bool(wort.get("unsicher"))]})
 
+    # Die Unsicherheit wird als Wortpositionen mitgeführt, nicht in den
+    # Text gemischt: der Wortlaut muss unversehrt bleiben.
     fertig = [{"start": round(s["start"], 2), "ende": round(s["ende"], 2),
-               "label": s["label"], "text": " ".join(s["worte"])}
+               "label": s["label"], "text": " ".join(s["worte"]),
+               "unsicher": [i for i, u in enumerate(s["unsicher"]) if u]}
               for s in segmente]
 
     # Wurde nichts erkannt, wenigstens die Sprecherstruktur zeigen
@@ -333,6 +338,67 @@ HAEUFIG = {
     "Musik", "Essen", "Wasser", "Geld", "Euro", "Prozent", "Endeffekt",
 }
 
+def _ausrichten(a, b):
+    """Richtet zwei Wortfolgen aneinander aus.
+
+    Gibt Paare (i, j) zurück; None steht für „hier fehlt etwas“. Basis für
+    den Abgleich zweier Erkennungen und für die Fehlerrate — beide brauchen
+    dieselbe Zuordnung, deshalb steht sie nur einmal hier.
+    """
+    zeilen = [[0] * (len(b) + 1) for _ in range(len(a) + 1)]
+    for i in range(len(a) + 1):
+        zeilen[i][0] = i
+    for j in range(len(b) + 1):
+        zeilen[0][j] = j
+    for i in range(1, len(a) + 1):
+        for j in range(1, len(b) + 1):
+            zeilen[i][j] = min(zeilen[i - 1][j] + 1, zeilen[i][j - 1] + 1,
+                               zeilen[i - 1][j - 1] + (a[i - 1] != b[j - 1]))
+    i, j, paare = len(a), len(b), []
+    while i > 0 or j > 0:
+        if (i > 0 and j > 0
+                and zeilen[i][j] == zeilen[i - 1][j - 1] + (a[i - 1] != b[j - 1])):
+            paare.append((i - 1, j - 1))
+            i, j = i - 1, j - 1
+        elif j > 0 and zeilen[i][j] == zeilen[i][j - 1] + 1:
+            paare.append((None, j - 1))
+            j -= 1
+        else:
+            paare.append((i - 1, None))
+            i -= 1
+    paare.reverse()
+    return paare
+
+
+def abgleich(vorlage, erkannt):
+    """Wo zwei unabhängige Erkennungen auseinandergehen.
+
+    Der stärkste kostenlose Hinweis auf Unsicherheit, den das System hat:
+    Apple erkennt auf dem Gerät, Whisper auf der GPU — verschiedene
+    Trainingsdaten, verschiedene Fehler. Wo beide dasselbe schreiben, ist
+    es fast sicher richtig; wo sie sich widersprechen, lohnt das Nachhören.
+
+    Der Wortlaut der Vorlage bleibt unangetastet. Zurückgegeben wird nur,
+    an welchen Stellen sie bestritten wird und wodurch — markieren statt
+    ersetzen, denn keine der beiden Quellen ist die Wahrheit.
+    """
+    v, e = _wortfolge(" ".join(vorlage)), _wortfolge(" ".join(erkannt))
+    # Nur vergleichbar, wenn beide Folgen nach der Normalisierung noch zu
+    # den Originalwörtern passen; sonst lieber gar nichts behaupten.
+    if len(v) != len(vorlage) or not e:
+        return []
+    strittig = []
+    for i, j in _ausrichten(v, e):
+        if i is None:
+            continue
+        if j is None:
+            strittig.append({"index": i, "wort": vorlage[i], "gehoert": None})
+        elif v[i] != e[j]:
+            strittig.append({"index": i, "wort": vorlage[i],
+                             "gehoert": erkannt[j]})
+    return strittig
+
+
 def _wortfolge(text):
     """Text auf vergleichbare Wörter herunterbrechen.
 
@@ -354,31 +420,15 @@ def wortfehlerrate(referenz, hypothese):
     jede Aussage über „bessere Qualität“ eine Vermutung.
     """
     r, h = _wortfolge(referenz), _wortfolge(hypothese)
-    # Volle Levenshtein-Matrix mit Rückverfolgung der Operationen.
-    zeilen = [[0] * (len(h) + 1) for _ in range(len(r) + 1)]
-    for i in range(len(r) + 1):
-        zeilen[i][0] = i
-    for j in range(len(h) + 1):
-        zeilen[0][j] = j
-    for i in range(1, len(r) + 1):
-        for j in range(1, len(h) + 1):
-            zeilen[i][j] = min(zeilen[i - 1][j] + 1, zeilen[i][j - 1] + 1,
-                               zeilen[i - 1][j - 1] + (r[i - 1] != h[j - 1]))
-
-    i, j = len(r), len(h)
     ers, ein, loe, paare = 0, 0, 0, {}
-    while i > 0 or j > 0:
-        if i > 0 and j > 0 and zeilen[i][j] == zeilen[i - 1][j - 1] + (r[i - 1] != h[j - 1]):
-            if r[i - 1] != h[j - 1]:
-                ers += 1
-                paare[(r[i - 1], h[j - 1])] = paare.get((r[i - 1], h[j - 1]), 0) + 1
-            i, j = i - 1, j - 1
-        elif j > 0 and zeilen[i][j] == zeilen[i][j - 1] + 1:
+    for i, j in _ausrichten(r, h):
+        if i is None:
             ein += 1
-            j -= 1
-        else:
+        elif j is None:
             loe += 1
-            i -= 1
+        elif r[i] != h[j]:
+            ers += 1
+            paare[(r[i], h[j])] = paare.get((r[i], h[j]), 0) + 1
 
     return {"woerter": len(r), "ersetzungen": ers, "einfuegungen": ein,
             "loeschungen": loe,
@@ -396,6 +446,135 @@ def protokoll_text(markdown):
         if drin and z.strip():
             zeilen.append(re.sub(r"^\*\*.*?\*\*\s*\([^)]*\):\s*", "", z.strip()))
     return " ".join(zeilen)
+
+
+# ---------------------------------------------------------------- Konfidenz
+# Der Aligner liefert für jedes Wort einen Anpassungswert. Bisher wurde er
+# verworfen — damit sah ein wackliges Wort im Protokoll genauso sicher aus
+# wie ein zweifelsfreies. Die Schwelle ist ein Startwert; mit
+# tests/wortfehlerrate.py lässt sie sich an echtem Material nachziehen.
+KONFIDENZ_SCHWELLE = 0.55
+
+
+def _konfidenz_markieren(chunks, strittig_idx=()):
+    """Markiert Wörter, denen man nicht trauen sollte.
+
+    Zwei unabhängige Gründe, beide gleich viel wert: der Aligner konnte
+    das Wort im Audio nicht sauber wiederfinden, oder die zweite Erkennung
+    hat etwas anderes gehört.
+    """
+    strittig_idx = set(strittig_idx)
+    for i, c in enumerate(chunks):
+        wert = c.get("wert")
+        c["unsicher"] = bool(
+            i in strittig_idx
+            or (wert is not None and wert < KONFIDENZ_SCHWELLE))
+    return chunks
+
+
+# ------------------------------------------------------------ Stimmabdrücke
+# Der Diarisierer berechnet für jeden Sprecher einen Stimmabdruck und wirft
+# ihn nach dem Clustern weg. Dadurch begegnet die App denselben Personen
+# jede Woche als Fremden. Aufgehoben erkennt sie sie wieder.
+STIMME_SCHWELLE = 0.65    # darunter gilt es nicht als dieselbe Person
+STIMME_ABSTAND = 0.06     # so viel Vorsprung braucht der beste Treffer
+STIMME_TRAEGHEIT = 0.7    # so stark zählt der bisherige Abdruck nach
+
+
+def _kosinus(a, b):
+    if not a or not b or len(a) != len(b):
+        return -1.0
+    punkt = sum(x * y for x, y in zip(a, b))
+    na = sum(x * x for x in a) ** 0.5
+    nb = sum(y * y for y in b) ** 0.5
+    return punkt / (na * nb) if na and nb else -1.0
+
+
+def stimmen_zuordnen(abdruecke, bekannt):
+    """Ordnet erkannte Sprecher bekannten Stimmen zu.
+
+    Zurückhaltend: ein Treffer zählt nur, wenn er die Schwelle reißt *und*
+    deutlich vor dem zweitbesten liegt. Zwei ähnliche Stimmen zu
+    verwechseln wäre schlimmer, als beide unbenannt zu lassen — ein
+    falscher Name im Protokoll ist schwer zu bemerken.
+    """
+    if not abdruecke or not bekannt:
+        return {}
+    treffer, vergeben = {}, set()
+    kandidaten = []
+    for label, vektor in abdruecke.items():
+        werte = sorted(((_kosinus(vektor, v), name)
+                        for name, v in bekannt.items()), reverse=True)
+        if not werte:
+            continue
+        bester, name = werte[0]
+        zweiter = werte[1][0] if len(werte) > 1 else -1.0
+        if bester >= STIMME_SCHWELLE and bester - zweiter >= STIMME_ABSTAND:
+            kandidaten.append((bester, label, name))
+    for _, label, name in sorted(kandidaten, reverse=True):
+        if name not in vergeben and label not in treffer:
+            treffer[label] = name
+            vergeben.add(name)
+    return treffer
+
+
+def stimmen_auffrischen(bekannt, abdruecke, namen):
+    """Schreibt die Stimmabdrücke der benannten Sprecher fort.
+
+    Gleitender Mittelwert statt Überschreiben: eine einzelne Aufnahme mit
+    Schnupfen oder schlechtem Mikro soll die gespeicherte Stimme nicht
+    umwerfen.
+    """
+    neu = {k: list(v) for k, v in (bekannt or {}).items()}
+    for label, name in (namen or {}).items():
+        vektor = (abdruecke or {}).get(label)
+        if not vektor or not name:
+            continue
+        alt = neu.get(name)
+        if alt and len(alt) == len(vektor):
+            g = STIMME_TRAEGHEIT
+            neu[name] = [g * a + (1 - g) * b for a, b in zip(alt, vektor)]
+        else:
+            neu[name] = list(vektor)
+    return neu
+
+
+# ------------------------------------------------------- Aufnahmequalität
+# Was nicht im Signal steckt, holt kein Modell zurück. Diese Grenze war
+# bisher unsichtbar — der Nutzer sah nur ein schlechtes Ergebnis und
+# konnte nicht wissen, dass es an der Aufnahme lag.
+SNR_GUT = 25.0
+SNR_GRENZ = 15.0
+LEISE_DB = -34.0
+UEBERSTEUERT_ANTEIL = 0.005
+
+
+def aufnahme_urteil(mess):
+    """Beurteilt die Aufnahme und sagt, was beim nächsten Mal zu tun ist."""
+    snr = (mess.get("sprache_db") or -60.0) - (mess.get("rausch_db") or -60.0)
+    rat = []
+    if snr < SNR_GRENZ:
+        stufe = "schlecht"
+        rat.append("Gerät näher an die Sprechenden legen — möglichst in die "
+                   "Mitte und auf eine weiche Unterlage.")
+    elif snr < SNR_GUT:
+        stufe = "grenzwertig"
+        rat.append("Etwas näher heran, dann wird der Wortlaut deutlich "
+                   "zuverlässiger.")
+    else:
+        stufe = "gut"
+
+    if (mess.get("sprache_db") or 0.0) < LEISE_DB:
+        rat.append("Die Aufnahme ist sehr leise.")
+    if (mess.get("uebersteuert") or 0.0) > UEBERSTEUERT_ANTEIL:
+        stufe = "schlecht" if stufe == "grenzwertig" else stufe
+        rat.append("Stellenweise übersteuert — nicht direkt vor dem Mikrofon "
+                   "sprechen.")
+
+    return {"stufe": stufe, "snr_db": round(snr, 1),
+            "sprache_db": round(mess.get("sprache_db") or -60.0, 1),
+            "rausch_db": round(mess.get("rausch_db") or -60.0, 1),
+            "rat": rat}
 
 
 # Halluzinationen in Stille
@@ -493,7 +672,7 @@ def _korrekturziele(glossar, eigener=""):
     return ziele
 
 
-def _korrigieren(segmente, ziele):
+def _korrigieren(segmente, ziele, festen=None):
     """Rückt knapp danebenliegende Wörter auf bekannte Begriffe zurecht.
 
     Bewusst zurückhaltend. Korrigiert wird nur, was nah genug an genau
@@ -505,7 +684,8 @@ def _korrigieren(segmente, ziele):
     Gibt die geänderten Segmente und ein Protokoll zurück — nichts wird
     still verändert.
     """
-    if not ziele:
+    festen = festen or {}
+    if not ziele and not festen:
         return segmente, []
 
     entscheidung = {}   # Wort (klein) -> Ziel oder None
@@ -514,6 +694,12 @@ def _korrigieren(segmente, ziele):
     def ziel_fuer(wort):
         if wort in entscheidung:
             return entscheidung[wort]
+        # Vom Nutzer bestätigte Korrekturen gelten ohne weitere Prüfung:
+        # sie sind die einzige Wahrheit, die nicht aus der Erkennung
+        # selbst stammt.
+        if wort in festen:
+            entscheidung[wort] = festen[wort]
+            return festen[wort]
         treffer = None
         if wort.capitalize() not in HAEUFIG and len(wort) >= KORREKTUR_MIN_LAENGE:
             for z in ziele:
@@ -603,11 +789,13 @@ def _kontext_bauen(eigener, glossar, grenze=380):
 
 def glossar_lesen(text):
     """Liest die Glossardatei -> (Begriff->Anzahl, Sprechernamen)."""
-    zaehler, sprecher, abschnitt = {}, [], None
+    zaehler, sprecher, festen, abschnitt = {}, [], {}, None
     for zeile in text.splitlines():
         z = zeile.strip()
         if z.lower().startswith("## sprecher"):
             abschnitt = "sprecher"
+        elif z.lower().startswith("## korrekturen"):
+            abschnitt = "korrekturen"
         elif z.startswith("## "):
             abschnitt = "begriffe"
         elif z.startswith("- ") and abschnitt:
@@ -617,16 +805,21 @@ def glossar_lesen(text):
             if abschnitt == "sprecher":
                 if wert not in sprecher:
                     sprecher.append(wert)
+            elif abschnitt == "korrekturen":
+                if "->" in wert:
+                    falsch, richtig = (t.strip() for t in wert.split("->", 1))
+                    if falsch and richtig:
+                        festen[falsch.lower()] = richtig
             else:
                 treffer = re.match(r"^(.*?)\s*\((\d+)\)$", wert)
                 begriff = (treffer.group(1) if treffer else wert).strip()
                 anzahl = int(treffer.group(2)) if treffer else 1
                 if begriff:
                     zaehler[begriff] = zaehler.get(begriff, 0) + anzahl
-    return zaehler, sprecher
+    return zaehler, sprecher, festen
 
 
-def glossar_schreiben(zaehler, sprecher):
+def glossar_schreiben(zaehler, sprecher, festen=None):
     """Erzeugt die Glossardatei, häufigste Begriffe zuerst."""
     geordnet = _rangfolge(zaehler)[:GLOSSAR_MAX]
     zeilen = ["# Glossar", "",
@@ -636,6 +829,11 @@ def glossar_schreiben(zaehler, sprecher):
     zeilen += [f"- {b} ({zaehler[b]})" for b in geordnet]
     zeilen += ["", "## Sprecher", ""]
     zeilen += [f"- {s}" for s in sprecher]
+    # Vom Nutzer bestätigte Korrekturen. Das ist die einzige Wahrheit im
+    # System, die nicht aus der Erkennung selbst stammt — sie gilt
+    # unbedingt, nicht nur bei genügender Ähnlichkeit.
+    zeilen += ["", "## Korrekturen", ""]
+    zeilen += [f"- {f} -> {r}" for f, r in sorted((festen or {}).items())]
     return "\n".join(zeilen) + "\n", geordnet
 
 

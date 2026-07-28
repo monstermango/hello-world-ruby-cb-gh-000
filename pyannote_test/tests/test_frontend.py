@@ -31,6 +31,7 @@ export class Client {
     if (ep === "/glossar_speichern") { window._glossar = daten; return {data: [{ok: true, begriffe: (daten[1]||"").split(/\\s*\\n\\s*/).filter(Boolean), sprecher: (daten[2]||"").split(/\\s*\\n\\s*/).filter(Boolean)}]}; }
     // Bewusst langsam: nur so faellt auf, wenn der Aufrufer die Antwort
     // nicht abwartet und den Token-Status zu frueh abliest.
+    if (ep === "/lernen") { window._gelernt = daten; return {data: [{ok: true, falsch: daten[1], richtig: daten[2]}]}; }
     if (ep === "/status") {
       await new Promise((f) => setTimeout(f, 400));
       return {data: [{ok: true, token: true}]};
@@ -58,11 +59,15 @@ export class Client {
       zeitpunkt: "2026-07-25T07:04:53+02:00",
       quelle: "dialog.wav", sprache: "german",
       neue_begriffe: ["Entwicklungsgespräch", "Hedi"], sprecher_bekannt: ["Nils"],
+      // Wiedererkannte Stimme und schwache Aufnahme — beides muss sichtbar sein.
+      vorschlag: {B: "Martha"},
+      qualitaet: {stufe: "schlecht", snr_db: 9.4, rat: ["Gerät näher an die Sprechenden legen."]},
+      abdruecke: {A: [1, 0], B: [0, 1]},
       namen: {A: "Sprecher 1", B: "Sprecher 2"},
       farben: {A: "#4e79a7", B: "#f28e2b"},
       daten: {dauer: 23.4,
         segmente: [
-          {start: 0, ende: 6.1, label: "A", text: "Guten Tag, hier spricht der erste Sprecher."},
+          {start: 0, ende: 6.1, label: "A", text: "Guten Tag, hier spricht der erste Sprecher.", unsicher: [4]},
           {start: 7, ende: 12.7, label: "B", text: "Hallo, ich bin die zweite Sprecherin."},
           {start: 13.6, ende: 19.3, label: "A", text: "Natürlich, gerne."},
           {start: 20.2, ende: 23.1, label: "B", text: "Wunderbar!"}],
@@ -217,9 +222,31 @@ async def main():
         assert abschnitte == 3, f"Nicht alle Abschnitte geholt: {abschnitte}"
         # Der Hinweis muss sagen, was die Stelle bedeutet — die frühere
         # Fassung kippte nur eine Wand aus Zeitstempeln auf den Schirm.
-        warnung = await page.locator(".sa-warn").inner_text()
+        warnung = await page.locator(".w-overlap").inner_text()
         assert "unsicher" in warnung, f"Hinweis ohne Aussage: {warnung!r}"
         assert len(warnung) < 200, f"Hinweis zu lang ({len(warnung)}): {warnung!r}"
+
+        # 4a2. Unsichere Wörter müssen als solche erkennbar sein — sonst
+        #      tritt ein wackliges Wort mit derselben Autorität auf wie
+        #      ein zweifelsfreies.
+        wackelig = page.locator(".wackelig")
+        assert await wackelig.count() == 1, "unsicheres Wort nicht markiert"
+        assert (await wackelig.first.inner_text()) == "der", \
+            "falsche Wortposition markiert"
+        # Der Wortlaut selbst bleibt unversehrt.
+        blase = await page.locator(".sa-bubble").first.inner_text()
+        assert blase == "Guten Tag, hier spricht der erste Sprecher.", blase
+
+        # 4a3. Schwache Aufnahme wird benannt und erklärt.
+        qual = await page.locator(".w-audio").inner_text()
+        assert "Aufnahmequalität" in qual and "näher" in qual, qual
+
+        # 4a4. Wiedererkannte Stimme ist vorausgefüllt.
+        felder = page.locator(".namen-feld")
+        assert await felder.nth(1).input_value() == "Martha", \
+            "wiedererkannte Stimme nicht vorausgefüllt"
+        assert await felder.first.input_value() == "", \
+            "unbekannte Stimme darf nicht geraten werden"
 
         gewuenscht = await page.evaluate("window._diarNum")
         assert gewuenscht == 3, \
@@ -244,8 +271,23 @@ async def main():
         await page.locator(".namen-feld").first.fill(LANG)
         await page.locator("#btn-speichern").dispatch_event("click")
         await page.wait_for_timeout(800)
+        # 4b2. Ein angetipptes Wort berichtigen — der einzige Weg, auf dem
+        #      Wissen von außen ins System gelangt.
+        await page.evaluate(
+            "window.prompt = () => 'die'")
+        await page.locator(".wackelig").first.dispatch_event("click")
+        await page.wait_for_timeout(600)
+        gelernt = await page.evaluate("window._gelernt")
+        assert gelernt and gelernt[1] == "der" and gelernt[2] == "die", \
+            f"Korrektur nicht ans Backend gemeldet: {gelernt}"
+        assert await page.locator(".berichtigt").count() == 1, \
+            "berichtigtes Wort nicht als solches gekennzeichnet"
+
         gespeichert = await page.evaluate("window._gespeicherteNamen")
-        assert gespeichert == {"A": LANG}, f"Namen falsch: {gespeichert}"
+        # Der vorausgefüllte Name der wiedererkannten Stimme wird
+        # mitgespeichert — genau dafür ist er da.
+        assert gespeichert == {"A": LANG, "B": "Martha"}, \
+            f"Namen falsch: {gespeichert}"
         assert await page.locator("#btn-md-laden").is_visible(), "MD-Button fehlt"
         assert LANG in await page.locator(".sa-legs").inner_text(), \
             "Umbenennung nicht übernommen"

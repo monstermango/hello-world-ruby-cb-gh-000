@@ -6,6 +6,7 @@ Zugangsschlüssel (Secret APP_PASS); erst nach der Prüfung wird GPU-Zeit
 verbraucht.
 """
 import hmac
+import json
 import os
 import re
 import secrets
@@ -34,7 +35,10 @@ from transformers import pipeline as hf_pipeline
 from kern import (FA_ANTEIL, FA_BLOCK, FA_FENSTER, FARBEN, FENSTER,
                   GLOSSAR_DATEI, GLOSSAR_MAX, GLOSSAR_PROMPT,
                   _begriffe_zaehlen, _decode_optionen, _fenstergrenzen,
-                  _ist_halluzination, _korrekturziele, _korrigieren,
+                  _ist_halluzination, _konfidenz_markieren, _korrekturziele,
+                  _korrigieren, abgleich, aufnahme_urteil,
+                  KORREKTUR_MIN_ZAEHLER, stimmen_zuordnen,
+                  stimmen_auffrischen,
                   _frontmatter, _kontext_bauen, _markdown, _namen_farben,
                   _rangfolge, _romanisieren, _sprecher_bei, _zeit,
                   _zusammenfuegen, glossar_lesen, glossar_schreiben,
@@ -126,7 +130,17 @@ def _diarize_gpu(audio_path, num_speakers):
     kwargs = {}
     if num_speakers and int(num_speakers) > 0:
         kwargs["num_speakers"] = int(num_speakers)
-    output = diarizer(audio_path, **kwargs)
+
+    # Der Stimmabdruck fällt beim Clustern ohnehin an. Aufgehoben erkennt
+    # die App dieselbe Person beim nächsten Mal wieder, statt sie erneut
+    # als „Sprecher 2“ zu begrüßen. Nicht jede Fassung gibt ihn heraus,
+    # deshalb der Rückfall auf den gewöhnlichen Aufruf.
+    einbettungen, output = None, None
+    try:
+        output, einbettungen = diarizer(audio_path, return_embeddings=True,
+                                        **kwargs)
+    except (TypeError, ValueError):
+        output = diarizer(audio_path, **kwargs)
     dia = getattr(output, "speaker_diarization", output)
 
     turns = [{"start": round(t.start, 2), "ende": round(t.end, 2), "label": lb}
@@ -138,7 +152,17 @@ def _diarize_gpu(audio_path, num_speakers):
                  "wer": sorted(lb for lb in dia.labels()
                                if dia.label_timeline(lb).crop(seg))}
                 for seg in dia.get_overlap()]
-    return turns, stats, overlaps
+
+    abdruecke = {}
+    if einbettungen is not None:
+        try:
+            for lb, vektor in zip(sorted(dia.labels()), einbettungen):
+                werte = [float(x) for x in vektor]
+                if any(werte):
+                    abdruecke[lb] = werte
+        except (TypeError, ValueError):
+            abdruecke = {}
+    return turns, stats, overlaps, abdruecke
 
 
 @spaces.GPU(duration=30)
@@ -177,10 +201,58 @@ def _worte_einpassen(audio_path, text, a, b, gesamt):
     if len(treffer) < len(worte) * 0.6:
         # Notfalls gleichmäßig verteilen, damit kein Text verloren geht
         schritt = (b - a) / max(len(worte), 1)
+        # Gleichmäßig verteilt heißt: nicht wirklich verortet. Das ist
+        # genau der Fall, in dem man dem Wort nicht trauen sollte.
         return [{"start": a + i * schritt, "ende": a + (i + 1) * schritt,
-                 "text": w, "sprache": None} for i, w in enumerate(worte)]
-    return [{"start": s, "ende": e, "text": worte[nr], "sprache": None}
-            for nr, s, e in treffer]
+                 "text": w, "sprache": None, "wert": 0.0}
+                for i, w in enumerate(worte)]
+    return [{"start": s, "ende": e, "text": worte[nr], "sprache": None,
+             "wert": wert} for nr, s, e, wert in treffer]
+
+
+def _pegel_messen(wav_pfad, turns=None):
+    """Misst Sprachpegel, Rauschteppich und Übersteuerung.
+
+    Was nicht im Signal steckt, holt kein Modell zurück. Diese Grenze war
+    bisher unsichtbar: der Nutzer sah nur ein schlechtes Ergebnis und
+    konnte nicht wissen, dass es an der Aufnahme lag. Liegen bereits
+    Sprecherzeiten vor, wird Sprache gegen Nichtsprache gemessen — sonst
+    ersatzweise das laute gegen das leise Zehntel.
+    """
+    import numpy as np
+    try:
+        welle, sr = loader({"audio": wav_pfad})
+        x = welle.squeeze(0).numpy().astype("float32")
+    except Exception:
+        return None
+    if x.size < 1000:
+        return None
+
+    fenster = max(1, int(sr * 0.05))
+    n = x.size // fenster
+    if n < 4:
+        return None
+    rahmen = x[:n * fenster].reshape(n, fenster)
+    energie = np.sqrt((rahmen ** 2).mean(axis=1)) + 1e-9
+    db = 20.0 * np.log10(energie)
+
+    if turns:
+        ist_sprache = np.zeros(n, dtype=bool)
+        for t in turns:
+            a = max(0, int(t["start"] * sr / fenster))
+            b = min(n, int(t["ende"] * sr / fenster) + 1)
+            ist_sprache[a:b] = True
+        if ist_sprache.any() and (~ist_sprache).any():
+            sprache_db = float(np.percentile(db[ist_sprache], 75))
+            rausch_db = float(np.percentile(db[~ist_sprache], 50))
+        else:
+            turns = None
+    if not turns:
+        sprache_db = float(np.percentile(db, 90))
+        rausch_db = float(np.percentile(db, 10))
+
+    return {"sprache_db": sprache_db, "rausch_db": rausch_db,
+            "uebersteuert": float((np.abs(x) > 0.995).mean())}
 
 
 def _asr_dauer(audio_path, start, ende, sprache=None, kontext=""):
@@ -231,8 +303,9 @@ def _transkribiere_gpu(audio_path, start, ende, sprache=None, kontext=""):
             rate = len(alle) / max(ende - start, 1.0)
             treffer, _, _ = _aligniere_bereich(audio_path, alle, start, ende,
                                                rate, schluss=True)
-            worte = [{"start": a, "ende": b, "text": alle[nr], "sprache": None}
-                     for nr, a, b in treffer]
+            worte = [{"start": a, "ende": b, "text": alle[nr],
+                      "sprache": None, "wert": wert}
+                     for nr, a, b, wert in treffer]
 
     for w in worte:
         w["sprache"] = sprache_erkannt or sprache
@@ -279,8 +352,12 @@ def _align_fenster(audio_path, worte, start, ende):
         teil = spans[pos:pos + len(tok)]
         pos += len(tok)
         if teil:
+            # Der Anpassungswert sagt, wie gut das Wort im Audio
+            # wiedergefunden wurde. Bisher weggeworfen — damit sah ein
+            # wackliges Wort so sicher aus wie ein zweifelsfreies.
+            wert = sum(sp.score for sp in teil) / len(teil)
             ergebnis.append((wort_nr, start + teil[0].start * verhaeltnis,
-                             start + teil[-1].end * verhaeltnis))
+                             start + teil[-1].end * verhaeltnis, float(wert)))
     return ergebnis
 
 
@@ -303,8 +380,8 @@ def _aligniere_bereich(audio_path, worte, start, ende, rate, schluss):
         if not treffer:
             zeit = fenster_ende
             continue
-        for nr, a, b in treffer:
-            treffer_gesamt.append((wi + nr, a, b))
+        for nr, a, b, wert in treffer:
+            treffer_gesamt.append((wi + nr, a, b, wert))
         wi += treffer[-1][0] + 1
         zeit = max(treffer[-1][2], zeit + 1.0)
     return treffer_gesamt, zeit, wi
@@ -336,8 +413,8 @@ def _align_schritt(s):
     treffer, neue_zeit, verbraucht = _align_gpu(
         s["wav"], worte[s["fa_wort"]:], s["fa_zeit"], block_ende, rate, gesamt)
 
-    for nr, a, b in treffer:
-        s["chunks"].append({"start": a, "ende": b,
+    for nr, a, b, wert in treffer:
+        s["chunks"].append({"start": a, "ende": b, "wert": wert,
                             "text": worte[s["fa_wort"] + nr], "sprache": None})
     s["fa_wort"] += verbraucht
     s["fa_zeit"] = max(neue_zeit, s["fa_zeit"] + 1.0)
@@ -419,34 +496,65 @@ GLOSSAR_TTL = 60.0
 # Häufige groß geschriebene Wörter, die als Vorschlag nichts bringen
 
 
+STIMMEN_DATEI = "stimmen.json"
+_stimmen_cache = {"zeit": 0.0, "daten": None}
+
+
+def _stimmen_laden(frisch=False):
+    """Gespeicherte Stimmabdrücke je benanntem Sprecher."""
+    jetzt = time.time()
+    if (not frisch and _stimmen_cache["daten"] is not None
+            and jetzt - _stimmen_cache["zeit"] < GLOSSAR_TTL):
+        return _stimmen_cache["daten"]
+    daten = {}
+    try:
+        pfad = hf_hub_download(DATEN_REPO, STIMMEN_DATEI, repo_type="dataset",
+                               token=HF_TOKEN, force_download=frisch)
+        with open(pfad, encoding="utf-8") as fh:
+            daten = json.load(fh)
+    except Exception:
+        pass
+    _stimmen_cache.update(zeit=jetzt, daten=daten)
+    return daten
+
+
+def _stimmen_sichern(daten):
+    api.upload_file(path_or_fileobj=json.dumps(daten).encode("utf-8"),
+                    path_in_repo=STIMMEN_DATEI, repo_id=DATEN_REPO,
+                    repo_type="dataset",
+                    commit_message="Stimmabdrücke aktualisiert")
+    _stimmen_cache.update(zeit=time.time(), daten=daten)
+
+
 def _glossar_laden(frisch=False):
     """Begriffe mit Häufigkeit, absteigend sortiert."""
     jetzt = time.time()
     if (not frisch and _glossar_cache["daten"] is not None
             and jetzt - _glossar_cache["zeit"] < GLOSSAR_TTL):
         return _glossar_cache["daten"]
-    zaehler, sprecher = {}, []
+    zaehler, sprecher, festen = {}, [], {}
     try:
         pfad = hf_hub_download(DATEN_REPO, GLOSSAR_DATEI, repo_type="dataset",
                                token=HF_TOKEN, force_download=frisch)
         with open(pfad, encoding="utf-8") as fh:
-            zaehler, sprecher = glossar_lesen(fh.read())
+            zaehler, sprecher, festen = glossar_lesen(fh.read())
     except Exception:
         pass
-    daten = {"zaehler": zaehler, "sprecher": sprecher,
+    daten = {"zaehler": zaehler, "sprecher": sprecher, "festen": festen,
              "begriffe": _rangfolge(zaehler)}
     _glossar_cache.update(zeit=jetzt, daten=daten)
     return daten
 
 
-def _glossar_speichern(zaehler, sprecher):
-    text, geordnet = glossar_schreiben(zaehler, sprecher)
+def _glossar_speichern(zaehler, sprecher, festen=None):
+    text, geordnet = glossar_schreiben(zaehler, sprecher, festen)
     api.upload_file(path_or_fileobj=text.encode("utf-8"),
                     path_in_repo=GLOSSAR_DATEI, repo_id=DATEN_REPO,
                     repo_type="dataset", commit_message="Glossar aktualisiert")
     behalten = {b: zaehler[b] for b in geordnet}
     _glossar_cache.update(zeit=time.time(),
                           daten={"zaehler": behalten, "sprecher": sprecher,
+                                 "festen": festen or {},
                                  "begriffe": geordnet})
 
 
@@ -469,7 +577,7 @@ def _glossar_fortschreiben(segmente, sprechernamen):
             if name and name not in sprecher:
                 sprecher.append(name)
                 neu.append(name)
-        _glossar_speichern(zaehler, sprecher)
+        _glossar_speichern(zaehler, sprecher, g.get("festen"))
         return _glossar_laden(), neu
     except Exception:
         traceback.print_exc()
@@ -497,14 +605,15 @@ def glossar_speichern_api(key, begriffe_text, sprecher_text):
         return raus[:GLOSSAR_MAX]
 
     begriffe, sprecher = zerlegen(begriffe_text), zerlegen(sprecher_text)
-    alt = _glossar_laden(frisch=True)["zaehler"]
+    vorher = _glossar_laden(frisch=True)
+    alt = vorher["zaehler"]
     # Vorhandene Häufigkeiten behalten, neue oben einsortieren
     hoechster = max(alt.values(), default=1)
     zaehler = {}
     for rang, b in enumerate(begriffe):
         zaehler[b] = alt.get(b, max(2, hoechster - rang))
     try:
-        _glossar_speichern(zaehler, sprecher)
+        _glossar_speichern(zaehler, sprecher, vorher.get("festen"))
     except Exception as e:
         return {"ok": False, "fehler": f"Speichern fehlgeschlagen: {e}"}
     g = _glossar_laden()
@@ -591,7 +700,7 @@ def diarisieren_api(key, sid, num_speakers, sprache=None):
     if not s:
         return {"ok": False, "fehler": "Sitzung abgelaufen. Bitte erneut starten."}
     try:
-        turns, stats, overlaps = _diarize_gpu(s["wav"], num_speakers)
+        turns, stats, overlaps, abdruecke = _diarize_gpu(s["wav"], num_speakers)
     except Exception as e:
         traceback.print_exc()
         return {"ok": False,
@@ -603,12 +712,27 @@ def diarisieren_api(key, sid, num_speakers, sprache=None):
         except Exception:
             sprache = None
     s.update(turns=turns, stats=stats, overlaps=overlaps, chunks=[],
+             abdruecke=abdruecke, abgleich_chunks=[], phase="haupt",
              sprache=sprache, fa_zeit=0.0, fa_wort=0, fertig=set(),
              fenster=_fenstergrenzen(turns, s["dauer"]))
-    abschnitte = (max(1, math.ceil(s["dauer"] / FA_FENSTER)) if s.get("worte")
-                  else max(1, len(s["fenster"]) - 1))
+    s["qualitaet"] = aufnahme_urteil(_pegel_messen(s["wav"], turns) or {})
+
+    # Bekannte Stimmen wiedererkennen: dieselben Personen sitzen Woche für
+    # Woche im selben Meeting.
+    s["vorschlag"] = stimmen_zuordnen(abdruecke, _stimmen_laden())
+
+    fa_abschnitte = max(1, math.ceil(s["dauer"] / FA_FENSTER))
+    asr_abschnitte = max(1, len(s["fenster"]) - 1)
+    if s.get("worte"):
+        # Erst das Transkript einpassen, danach zum Abgleich selbst
+        # erkennen. Zwei unabhängige Erkennungen sind der einzige
+        # kostenlose Hinweis darauf, wo der Text unsicher ist.
+        abschnitte = fa_abschnitte + asr_abschnitte
+    else:
+        abschnitte = asr_abschnitte
     return {"ok": True, "sprecher": len(stats), "sprache": sprache,
-            "abschnitte": abschnitte}
+            "abschnitte": abschnitte, "qualitaet": s["qualitaet"],
+            "vorschlag": s["vorschlag"]}
 
 
 def transkribieren_api(key, sid, index):
@@ -619,7 +743,7 @@ def transkribieren_api(key, sid, index):
     if not s or "fenster" not in s:
         return {"ok": False, "fehler": "Sitzung abgelaufen. Bitte erneut starten."}
 
-    if s.get("worte"):
+    if s.get("worte") and s.get("phase") == "haupt":
         try:
             weiter = _align_schritt(s)
         except Exception as e:
@@ -627,7 +751,13 @@ def transkribieren_api(key, sid, index):
             return {"ok": False,
                     "fehler": f"Transkript einpassen fehlgeschlagen: "
                               f"{type(e).__name__}: {e}"}
-        return {"ok": True, "weiter": weiter,
+        if not weiter:
+            # Eingepasst. Jetzt dieselbe Aufnahme selbst erkennen, damit
+            # sich die beiden Ergebnisse gegenseitig prüfen können.
+            s["phase"] = "abgleich"
+            s["fertig"] = set()
+            weiter = True
+        return {"ok": True, "weiter": weiter, "schritt": "einpassen",
                 "fortschritt": round(min(1.0, s["fa_zeit"] / max(s["dauer"], 1)), 2)}
 
     i = int(index)
@@ -637,10 +767,13 @@ def transkribieren_api(key, sid, index):
         # Bereits verarbeitet — Wiederholung nach Abbruch darf nichts doppeln
         return {"ok": True, "index": i, "abschnitte": len(s["fenster"]) - 1,
                 "weiter": i + 1 < len(s["fenster"]) - 1}
+    ziel_liste = ("abgleich_chunks" if s.get("phase") == "abgleich"
+                  else "chunks")
     try:
-        s["chunks"] += _transkribiere_gpu(s["wav"], s["fenster"][i],
-                                          s["fenster"][i + 1],
-                                          s.get("sprache"), s.get("kontext", ""))
+        s[ziel_liste] += _transkribiere_gpu(s["wav"], s["fenster"][i],
+                                            s["fenster"][i + 1],
+                                            s.get("sprache"),
+                                            s.get("kontext", ""))
     except Exception as e:
         traceback.print_exc()
         return {"ok": False,
@@ -652,6 +785,19 @@ def transkribieren_api(key, sid, index):
 
 def _daten_sichern(s):
     if "daten" not in s:
+        # Zwei unabhängige Erkennungen: wo sie sich widersprechen, ist der
+        # Text unsicher. Der Wortlaut der Vorlage bleibt stehen — markiert
+        # wird nur, was bestritten ist.
+        strittig_idx = ()
+        if s.get("abgleich_chunks"):
+            haupt = [c["text"] for c in sorted(s["chunks"],
+                                               key=lambda c: c["start"])]
+            zweit = [c["text"] for c in sorted(s["abgleich_chunks"],
+                                               key=lambda c: c["start"])]
+            s["strittig"] = abgleich(haupt, zweit)
+            strittig_idx = {x["index"] for x in s["strittig"]}
+        s["chunks"] = _konfidenz_markieren(
+            sorted(s["chunks"], key=lambda c: c["start"]), strittig_idx)
         daten = _zusammenfuegen(s["turns"], s["stats"], s["overlaps"],
                                 s["chunks"], s["dauer"], s.get("sprache"))
         # Erst nach der Zuordnung korrigieren: die Zeitstempel stammen aus
@@ -659,11 +805,14 @@ def _daten_sichern(s):
         # Ein mitgeliefertes Transkript bleibt unangetastet — es ist die
         # Vorlage, nicht die Vermutung.
         if not s.get("worte"):
-            ziele = _korrekturziele(_glossar_laden(), s.get("eigener", ""))
+            g = _glossar_laden()
+            ziele = _korrekturziele(g, s.get("eigener", ""))
             daten["segmente"], daten["korrekturen"] = _korrigieren(
-                daten["segmente"], ziele)
+                daten["segmente"], ziele, g.get("festen"))
         else:
             daten["korrekturen"] = []
+        daten["qualitaet"] = s.get("qualitaet")
+        daten["strittig"] = s.get("strittig", [])
         s["daten"] = daten
     return s["daten"]
 
@@ -687,7 +836,12 @@ def abschliessen_api(key, sid):
             "glossar": glossar["begriffe"][:GLOSSAR_PROMPT],
             "glossar_gesamt": len(glossar["begriffe"]),
             "neue_begriffe": neue_begriffe,
-            "sprecher_bekannt": glossar["sprecher"]}
+            "sprecher_bekannt": glossar["sprecher"],
+            # Damit die App die Stimmen beim Speichern fortschreiben kann
+            # und benannte Sprecher gleich vorausgefüllt sind.
+            "abdruecke": s.get("abdruecke") or {},
+            "vorschlag": s.get("vorschlag") or {},
+            "qualitaet": s.get("qualitaet")}
 
 
 def analysieren_api(key, audio, num_speakers, sprache=None, transkript=None,
@@ -732,8 +886,48 @@ def speichern_api(key, analyse, namen):
     neue = []
     if eigene:                      # Sprechernamen fürs nächste Mal merken
         _, neue = _glossar_fortschreiben([], list(eigene.values()))
+        # Und die Stimme dazu: beim nächsten Mal erkennt die App die
+        # Person wieder, statt sie erneut nummerieren zu lassen.
+        abdruecke = (analyse.get("abdruecke") or {})
+        if abdruecke:
+            try:
+                _stimmen_sichern(stimmen_auffrischen(
+                    _stimmen_laden(frisch=True), abdruecke, eigene))
+            except Exception:
+                traceback.print_exc()
     return {"ok": True, "pfad": pfad, "markdown": md_text,
             "neue_begriffe": neue}
+
+
+def lernen_api(key, falsch, richtig):
+    """Nimmt eine vom Nutzer bestätigte Korrektur auf.
+
+    Bis hierher lernte das System ausschließlich aus der eigenen Ausgabe —
+    ein Kreis ohne Wahrheit von außen, der nur die eigenen Fehler
+    verstärken kann. Dies ist der einzige Eingang für echtes Wissen: was
+    der Mensch beim Lesen als falsch erkannt und richtiggestellt hat.
+    """
+    if not _pruefe(key):
+        return {"ok": False, "fehler": "Ungültiger Zugangsschlüssel."}
+    falsch = (falsch or "").strip()
+    richtig = (richtig or "").strip()
+    if not falsch or not richtig or falsch.lower() == richtig.lower():
+        return {"ok": False, "fehler": "Nichts zu lernen."}
+    if len(richtig) > 80 or " " in richtig:
+        return {"ok": False, "fehler": "Bitte ein einzelnes Wort."}
+    try:
+        g = _glossar_laden(frisch=True)
+        festen = dict(g.get("festen") or {})
+        festen[falsch.lower()] = richtig
+        zaehler = dict(g["zaehler"])
+        # Das richtige Wort zählt ab jetzt als bestätigter Begriff, damit
+        # auch ähnliche Verhörer darauf gezogen werden.
+        zaehler[richtig] = max(zaehler.get(richtig, 0), KORREKTUR_MIN_ZAEHLER)
+        _glossar_speichern(zaehler, g["sprecher"], festen)
+    except Exception as e:
+        traceback.print_exc()
+        return {"ok": False, "fehler": f"Speichern fehlgeschlagen: {e}"}
+    return {"ok": True, "falsch": falsch, "richtig": richtig}
 
 
 def verlauf_api(key):
@@ -818,6 +1012,11 @@ with gr.Blocks(title="Sprecher-Analyse API") as demo:
         out_speichern = gr.JSON()
         b_speichern.click(speichern_api, [key, analyse_json, namen_json],
                           out_speichern, api_name="speichern")
+        falsch_feld = gr.Textbox(label="Falsch erkannt")
+        richtig_feld = gr.Textbox(label="Richtig")
+        gr.Button("Korrektur merken").click(
+            lernen_api, [key, falsch_feld, richtig_feld], gr.JSON(),
+            api_name="lernen")
     with gr.Tab("Verlauf"):
         b_verlauf = gr.Button("Verlauf laden")
         out_verlauf = gr.JSON()
