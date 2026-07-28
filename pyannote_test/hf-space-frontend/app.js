@@ -411,6 +411,7 @@ async function analyseRahmen(arbeit) {
     toast("Fehler: " + e.message + hinweis);
     fortsetzenAnbieten();
   } finally {
+    wachEnde();
     clearInterval(ticker);
     wakeLockFreigeben();
     $("#btn-analyse").disabled = false;
@@ -422,6 +423,13 @@ $("#btn-analyse").addEventListener("click", () => {
   if (!audioDatei) return;
   analyseRahmen(async (melde) => {
     const n = parseInt($("#num-speakers").value, 10) || 0;
+
+    // Vor dem Hochladen, solange die Nutzergeste noch zählt.
+    const wach = await wachHalten();
+    $("#progress-hinweis").textContent = wach
+      ? "Du kannst die App jetzt verlassen — die Übertragung läuft weiter."
+      : "Bitte geöffnet lassen, bis die Aufnahme übertragen ist.";
+    $("#progress-hinweis").classList.toggle("frei", wach);
 
     melde("Lade Audio hoch …");
     const transkript = $("#transkript").value.trim();
@@ -446,16 +454,60 @@ $("#btn-analyse").addEventListener("click", () => {
       toast("Achtung: Auftrag ohne dein HF-Token gestartet.");
     }
     auftragSpeichern(start.auftrag);
-    // Ab jetzt — und keine Sekunde früher — darf die App zu.
+    // Übertragen. Ab hier trägt der Space allein, der Wachton kann weg.
+    wachEnde();
     $("#progress-hinweis").textContent =
-      "Läuft jetzt im Hintergrund. Du kannst die App schließen; "
-      + "wenn sie fertig ist, bekommst du eine Nachricht.";
+      "Läuft jetzt im Space. Du kannst die App schließen; wenn sie fertig "
+      + "ist, bekommst du eine Nachricht.";
     $("#progress-hinweis").classList.add("frei");
-    toast("Läuft im Hintergrund — App darf zu.");
+    toast("Übertragen — läuft jetzt im Hintergrund.");
     benachrichtigungAnbieten();
     return await auftragVerfolgen(start.auftrag, melde);
   });
 });
+
+// ---------- Am Leben halten ----------
+// iOS friert JavaScript ein, sobald die App in den Hintergrund geht — der
+// Upload bräche dann ab. Eine laufende Tonspur hält die Seite wach; das
+// ist die einzige Möglichkeit, die Safari dafür bietet (Background Fetch
+// gibt es dort nicht). Sie läuft nur, bis der Auftrag im Space steht.
+let wachton = null;
+
+function stilleSpur() {
+  const rate = 8000, n = rate;              // eine Sekunde, wird geschleift
+  const p = new ArrayBuffer(44 + n);
+  const v = new DataView(p);
+  const text = (pos, t) => [...t].forEach((c, i) =>
+    v.setUint8(pos + i, c.charCodeAt(0)));
+  text(0, "RIFF"); v.setUint32(4, 36 + n, true); text(8, "WAVEfmt ");
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true);
+  v.setUint16(22, 1, true); v.setUint32(24, rate, true);
+  v.setUint32(28, rate, true); v.setUint16(32, 1, true);
+  v.setUint16(34, 8, true); text(36, "data"); v.setUint32(40, n, true);
+  for (let i = 0; i < n; i++) v.setUint8(44 + i, 128);   // 8 Bit: Stille
+  return URL.createObjectURL(new Blob([p], { type: "audio/wav" }));
+}
+
+async function wachHalten() {
+  // Muss aus der Nutzergeste heraus starten, sonst verweigert iOS.
+  try {
+    if (!wachton) {
+      wachton = new Audio(stilleSpur());
+      wachton.loop = true;
+      wachton.setAttribute("playsinline", "");
+      wachton.volume = 0;
+    }
+    await wachton.play();
+    return true;
+  } catch (e) {
+    console.warn("Wachton nicht möglich:", e);
+    return false;
+  }
+}
+
+function wachEnde() {
+  if (wachton) { wachton.pause(); }
+}
 
 // ---------- Aufträge ----------
 

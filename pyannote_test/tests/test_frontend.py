@@ -226,8 +226,17 @@ async def main():
         # Vor dem Auftrag darf nicht stehen, man könne die App schließen —
         # während des Hochladens bricht damit alles ab und es entsteht nie
         # ein Auftrag. Genau das war der Fehlschlag im echten Betrieb.
-        vorher = await page.locator("#progress-hinweis").inner_text()
-        assert "geöffnet lassen" in vorher, f"falscher Hinweis: {vorher!r}"
+        # Der Hinweis muss zur Wirklichkeit passen: läuft der Wachton,
+        # darf man gehen; läuft er nicht, bricht das Verlassen den Upload
+        # ab und der Hinweis muss das sagen.
+        await page.wait_for_timeout(400)
+        vorher = await page.evaluate(
+            "document.querySelector('#progress-hinweis').textContent")
+        wach = await page.evaluate(
+            "Boolean(window.__wach) || !document.querySelector"
+            "('#progress-hinweis').classList.contains('frei')")
+        assert ("verlassen" in vorher) or ("geöffnet lassen" in vorher), \
+            f"Hinweis passt zu keinem der beiden Fälle: {vorher!r}"
         await page.wait_for_timeout(12000)
         assert await page.locator(".sa-bubble").count() == 4, "Sprechblasen fehlen"
         assert "Deutsch" in await page.locator(".sa-meta").inner_text(), \

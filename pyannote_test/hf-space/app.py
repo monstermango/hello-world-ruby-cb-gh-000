@@ -669,6 +669,16 @@ def _auftrag_lauf(jid, sid, num_speakers, sprache):
     """Fährt die komplette Kette durch, ohne dass jemand zusieht."""
     j = AUFTRAEGE[jid]
     try:
+        j.update(schritt="Audio vorbereiten")
+        s = _sitzung(sid)
+        if not s:
+            raise RuntimeError("Sitzung abgelaufen.")
+        try:
+            _audio_bereitstellen(s)
+        except subprocess.CalledProcessError:
+            raise RuntimeError("Audioformat konnte nicht gelesen werden.")
+
+        j.update(schritt="Sprecher erkennen")
         r = diarisieren_api(APP_KEY, sid, num_speakers, sprache)
         if not r.get("ok"):
             raise RuntimeError(r.get("fehler", "Sprechererkennung fehlgeschlagen"))
@@ -1006,23 +1016,29 @@ def vorbereiten_api(key, audio, transkript=None, kontext=None):
     if not audio:
         return {"ok": False, "fehler": "Kein Audio übermittelt."}
     _aufraeumen()
-    quelle = os.path.basename(audio)
-    try:
-        wav = _nach_wav(audio)
-    except subprocess.CalledProcessError:
-        return {"ok": False, "fehler": "Audioformat konnte nicht gelesen werden."}
+    # Bewusst ohne Umwandlung: ffmpeg über eine Stunde Audio dauert, und
+    # solange diese Anfrage läuft, muss die App im Vordergrund bleiben.
+    # Die Umwandlung ist der erste Schritt des Hintergrundauftrags.
     worte = (transkript or "").split()
     sid = secrets.token_urlsafe(16)
-    SITZUNGEN[sid] = {"wav": wav, "original": audio,
-                      "quelle": quelle, "zeit": time.time(),
-                      "dauer": loader.get_duration(wav), "chunks": [],
+    SITZUNGEN[sid] = {"wav": None, "original": audio,
+                      "quelle": os.path.basename(audio), "zeit": time.time(),
+                      "dauer": None, "chunks": [],
                       "worte": worte, "fa_zeit": 0.0, "fa_wort": 0,
                       "eigener": (kontext or "").strip(),
                       "kontext": _kontext_bauen((kontext or "").strip(),
                                                 _glossar_laden())}
-    return {"ok": True, "id": sid, "dauer": round(SITZUNGEN[sid]["dauer"], 1),
+    return {"ok": True, "id": sid,
             "modus": "transkript" if worte else "erkennung",
             "woerter": len(worte)}
+
+
+def _audio_bereitstellen(s):
+    """Wandelt die hochgeladene Datei um. Erster Schritt im Hintergrund."""
+    if s.get("wav"):
+        return
+    s["wav"] = _nach_wav(s["original"])
+    s["dauer"] = loader.get_duration(s["wav"])
 
 
 def diarisieren_api(key, sid, num_speakers, sprache=None):
