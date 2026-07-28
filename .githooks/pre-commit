@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Letzte Instanz vor dem Commit — greift unabhängig davon, wer committet.
+# Aktivieren mit:  git config core.hooksPath .githooks
+exec "$(git rev-parse --show-toplevel)/scripts/geheimnisse_pruefen.sh"

@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+venv/
+.venv/
+
+# Persönliche Einstellungen und Zugangsdaten
+.claude/settings.local.json
+.env
+*.token
+
+# Arbeitsdateien
+*.wav
+*.m4a
+*.webm
+fe_*.png
+ux*.png
