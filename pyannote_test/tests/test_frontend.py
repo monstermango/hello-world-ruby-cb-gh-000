@@ -66,6 +66,7 @@ export class Client {
           {start: 7, ende: 12.7, label: "B", text: "Hallo, ich bin die zweite Sprecherin."},
           {start: 13.6, ende: 19.3, label: "A", text: "Natürlich, gerne."},
           {start: 20.2, ende: 23.1, label: "B", text: "Wunderbar!"}],
+        korrekturen: [{vorher: "Marta", nachher: "Martha", anzahl: 2}],
         stats: {A: {dauer: 11.7, turns: 2}, B: {dauer: 8.5, turns: 2}},
         // Das Backend liefert nur noch zusammengefasste Passagen, keine
         // Einzelmessungen — der Mock muss dasselbe tun.
@@ -227,8 +228,12 @@ async def main():
         assert ueber == 0, f"Ergebnis scrollt {ueber}px waagerecht"
 
         # 4a. Das Glossar lernt sichtbar mit
-        gelernt = await page.locator(".gelernt").inner_text()
+        gelernt = await page.locator(".gelernt").first.inner_text()
         assert "Entwicklungsgespräch" in gelernt and "Hedi" in gelernt, gelernt
+        # Korrekturen muessen ausgewiesen sein, nicht still passieren.
+        korr = await page.locator(".gelernt").nth(1).inner_text()
+        assert "Marta" in korr and "Martha" in korr, \
+            f"Korrektur nicht ausgewiesen: {korr!r}"
 
         # 4b. Sprecher benennen und speichern. Bewusst mit einem langen
         #     Namen: die Legende darf dadurch nicht über den Rand wachsen.

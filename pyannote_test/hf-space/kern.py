@@ -203,6 +203,15 @@ def _markdown(daten, quelle, zeitpunkt, namen=None):
     for s in daten["segmente"]:
         md.append(f"| {_zeit(s['start'])} | {_zeit(s['ende'])} | {namen[s['label']]} |")
 
+    if daten.get("korrekturen"):
+        md += ["", "## Korrigierte Begriffe", "",
+               "Gegen das Glossar zurechtgerückt. Der ursprüngliche "
+               "Wortlaut steht hier, damit die Änderung nachvollziehbar "
+               "bleibt.", "",
+               "| Erkannt | Eingesetzt | Anzahl |", "|---|---|---|"]
+        for k in daten["korrekturen"]:
+            md.append(f"| {k['vorher']} | {k['nachher']} | {k['anzahl']} |")
+
     if daten["overlaps"]:
         md += ["", "## Gleichzeitiges Sprechen", "",
                "Stellen, an denen mehrere so lange gleichzeitig gesprochen "
@@ -236,29 +245,194 @@ def _romanisieren(wort):
     return re.sub(r"[^a-z']", "", w)
 
 
+# Deutsch schreibt jedes Substantiv groß, deshalb reicht „großgeschrieben“
+# als Merkmal für einen Fachbegriff nicht annähernd aus. Ohne eine breite
+# Sperrliste führen Allerweltswörter die Rangfolge an — gemessen standen
+# „Ihren“ und „Augen“ vor „Martha“ und „Hedi“.
 HAEUFIG = {
-    "Ich", "Du", "Er", "Sie", "Es", "Wir", "Ihr", "Der", "Die", "Das", "Den",
-    "Dem", "Ein", "Eine", "Einen", "Einem", "Und", "Aber", "Oder", "Also",
-    "Dann", "Doch", "Noch", "Nur", "Schon", "Ja", "Nein", "Genau", "Okay",
-    "Was", "Wie", "Wer", "Wo", "Wann", "Warum", "Weil", "Wenn", "Dass",
-    "Hier", "Da", "Dort", "Jetzt", "Mal", "Ganz", "Sehr", "Mehr", "Gut",
+    # Pronomen, auch die großgeschriebene Höflichkeitsform
+    "Ich", "Du", "Er", "Sie", "Es", "Wir", "Ihr", "Ihre", "Ihren", "Ihrem",
+    "Ihres", "Ihrer", "Ihnen", "Mich", "Dich", "Uns", "Euch", "Mein",
+    "Meine", "Meinen", "Dein", "Deine", "Sein", "Seine", "Unser", "Unsere",
+    "Man", "Jemand", "Niemand", "Etwas", "Nichts", "Alles",
+    # Artikel und Bestimmer
+    "Der", "Die", "Das", "Den", "Dem", "Des", "Ein", "Eine", "Einen",
+    "Einem", "Eines", "Einer", "Kein", "Keine", "Keinen", "Diese", "Dieser",
+    "Dieses", "Diesem", "Diesen", "Alle", "Allen", "Jede", "Jeder", "Jedes",
+    "Jeden", "Manche", "Solche", "Welche", "Welcher", "Welches", "Beide",
+    # Bindewörter und Umstandswörter
+    "Und", "Oder", "Aber", "Also", "Dann", "Doch", "Noch", "Nur", "Schon",
+    "Ja", "Nein", "Genau", "Okay", "Was", "Wie", "Wer", "Wo", "Wann",
+    "Warum", "Weil", "Wenn", "Dass", "Denn", "Damit", "Deshalb", "Darum",
+    "Dadurch", "Trotzdem", "Außerdem", "Allerdings", "Vielleicht",
+    "Natürlich", "Eigentlich", "Wirklich", "Einfach", "Immer", "Nie",
+    "Oft", "Manchmal", "Wieder", "Erst", "Gerade", "Hier", "Da", "Dort",
+    "Jetzt", "Heute", "Morgen", "Gestern", "Mal", "Ganz", "Sehr", "Mehr",
+    "Weniger", "Gut", "Besser", "Schlecht", "Groß", "Klein", "Viel",
+    "Wenig", "Zusammen", "Sozusagen", "Quasi", "Halt", "Eben",
+    # Häufige Verbformen, meist am Satzanfang
+    "Ist", "Sind", "War", "Waren", "Habe", "Hat", "Haben", "Hatte",
+    "Hatten", "Kann", "Können", "Konnte", "Muss", "Müssen", "Musste",
+    "Will", "Wollen", "Wollte", "Soll", "Sollen", "Sollte", "Darf",
+    "Dürfen", "Werde", "Wird", "Werden", "Wurde", "Wurden", "Gibt",
+    "Geht", "Kommt", "Macht", "Sagt", "Sagte", "Denke", "Denken",
+    "Glaube", "Glauben", "Finde", "Finden", "Sehe", "Sehen", "Weiß",
+    "Wissen", "Meinen", "Gesagt", "Gemacht", "Gehabt",
+    # Allerweltsnomen
     "Herr", "Frau", "Vielen", "Dank", "Hallo", "Tag", "Zeit", "Sache",
+    "Sachen", "Mensch", "Menschen", "Leute", "Kind", "Kinder", "Jahr",
+    "Jahre", "Woche", "Wochen", "Monat", "Monate", "Stunde", "Stunden",
+    "Minute", "Minuten", "Frage", "Fragen", "Antwort", "Punkt", "Punkte",
+    "Beispiel", "Moment", "Ende", "Anfang", "Seite", "Teil", "Grund",
+    "Gründe", "Fall", "Weg", "Art", "Weise", "Ding", "Dinge", "Idee",
+    "Ideen", "Gruppe", "Gruppen", "Auge", "Augen", "Hand", "Hände",
+    "Kopf", "Herz", "Haus", "Arbeit", "Schule", "Familie", "Eltern",
+    "Mutter", "Vater", "Sohn", "Tochter", "Freund", "Freunde", "Problem",
+    "Probleme", "Thema", "Themen", "Situation", "Erfahrung", "Bereich",
+    "Möglichkeit", "Stelle", "Person", "Personen", "Leben", "Welt",
+    "Land", "Stadt", "Platz", "Raum", "Zimmer", "Nummer", "Name", "Namen",
+    "Wort", "Worte", "Wörter", "Satz", "Text", "Bild", "Bilder", "Film",
+    "Musik", "Essen", "Wasser", "Geld", "Euro", "Prozent", "Endeffekt",
 }
+
+# Nachträgliche Korrektur gegen das Glossar
+KORREKTUR_MIN_LAENGE = 4    # kürzere Begriffe haben zu viele Nachbarn
+KORREKTUR_MIN_ZAEHLER = 5   # so oft muss ein Begriff bestätigt sein
+
+
+def _abstand(a, b, grenze):
+    """Levenshtein-Abstand, abgebrochen sobald `grenze` überschritten ist.
+
+    Der Abbruch ist nicht nur Tempo: er hält den Rückgabewert klein und
+    eindeutig — alles jenseits der Grenze ist ohnehin kein Treffer.
+    """
+    if abs(len(a) - len(b)) > grenze:
+        return grenze + 1
+    vorige = list(range(len(b) + 1))
+    for i, za in enumerate(a, 1):
+        aktuelle = [i]
+        for j, zb in enumerate(b, 1):
+            aktuelle.append(min(vorige[j] + 1, aktuelle[j - 1] + 1,
+                                vorige[j - 1] + (za != zb)))
+        if min(aktuelle) > grenze:
+            return grenze + 1
+        vorige = aktuelle
+    return vorige[-1]
+
+
+def _korrekturziele(glossar, eigener=""):
+    """Begriffe, gegen die überhaupt korrigiert werden darf.
+
+    Was der Nutzer selbst eingetragen hat — Sprechernamen, das Feld
+    „Namen & Begriffe“ — zählt sofort. Automatisch Gesammeltes erst, wenn
+    es sich über mehrere Aufnahmen bestätigt hat; sonst zementiert ein
+    einmaliger Hörfehler sich selbst.
+    """
+    ziele, gesehen = [], set()
+
+    def dazu(wert):
+        wert = (wert or "").strip()
+        if (len(wert) >= KORREKTUR_MIN_LAENGE and " " not in wert
+                and wert not in HAEUFIG and wert.lower() not in gesehen):
+            gesehen.add(wert.lower())
+            ziele.append(wert)
+
+    for teil in re.split(r"[,;]", eigener or ""):
+        dazu(teil)
+    for name in (glossar.get("sprecher") or []):
+        dazu(name)
+    for begriff, anzahl in (glossar.get("zaehler") or {}).items():
+        if anzahl >= KORREKTUR_MIN_ZAEHLER:
+            dazu(begriff)
+    return ziele
+
+
+def _korrigieren(segmente, ziele):
+    """Rückt knapp danebenliegende Wörter auf bekannte Begriffe zurecht.
+
+    Bewusst zurückhaltend. Korrigiert wird nur, was nah genug an genau
+    einem Ziel liegt — passt ein Wort auf zwei Begriffe gleich gut, bleibt
+    es unangetastet, denn dann ist die Korrektur geraten. Ebenso bleibt
+    stehen, was selbst ein geläufiges Wort ist: „Wagen“ soll nicht zu
+    „Hagen“ werden, nur weil jemand so heißt.
+
+    Gibt die geänderten Segmente und ein Protokoll zurück — nichts wird
+    still verändert.
+    """
+    if not ziele:
+        return segmente, []
+
+    entscheidung = {}   # Wort (klein) -> Ziel oder None
+    protokoll = {}
+
+    def ziel_fuer(wort):
+        if wort in entscheidung:
+            return entscheidung[wort]
+        treffer = None
+        if wort.capitalize() not in HAEUFIG and len(wort) >= KORREKTUR_MIN_LAENGE:
+            for z in ziele:
+                if z.lower() == wort:
+                    treffer = None
+                    break
+                # Der Anfangsbuchstabe muss stimmen. Ohne diese Bedingung
+                # liegt jedes beliebige Wort einen Tausch neben einem Namen
+                # — „Wagen“ würde zu „Hagen“. Verhörer bei Eigennamen
+                # betreffen fast immer die Mitte, nicht den Anfang.
+                if z[:1].lower() != wort[:1]:
+                    continue
+                budget = 1 if len(z) < 8 else 2
+                if _abstand(wort, z.lower(), budget) <= budget:
+                    if treffer is not None and treffer != z:
+                        treffer = None       # mehrdeutig: Finger weg
+                        break
+                    treffer = z
+        entscheidung[wort] = treffer
+        return treffer
+
+    def ersetze(treffer):
+        wort = treffer.group(0)
+        z = ziel_fuer(wort.lower())
+        if not z or z == wort:
+            return wort
+        protokoll[(wort, z)] = protokoll.get((wort, z), 0) + 1
+        return z
+
+    neu = []
+    for s in segmente:
+        text = s.get("text")
+        if text:
+            s = dict(s, text=re.sub(r"\b[\wÄÖÜäöüß-]+\b", ersetze, text))
+        neu.append(s)
+
+    liste = [{"vorher": v, "nachher": n, "anzahl": a}
+             for (v, n), a in sorted(protokoll.items(), key=lambda p: -p[1])]
+    return neu, liste
 
 def _rangfolge(zaehler):
     """Häufigstes zuerst, bei Gleichstand alphabetisch."""
     return [b for b, _ in sorted(zaehler.items(), key=lambda p: (-p[1], p[0]))]
 
 def _begriffe_zaehlen(segmente):
-    """Zählt wiederkehrende Eigennamen und Fachbegriffe im Transkript."""
-    haeufigkeit = {}
+    """Zählt wiederkehrende Eigennamen und Fachbegriffe im Transkript.
+
+    Neben der Sperrliste zählt die Satzstellung: ein Wort, das ausnahmslos
+    am Satzanfang steht, ist großgeschrieben, weil dort jedes Wort
+    großgeschrieben wird — als Substantiv ausgewiesen ist es damit nicht.
+    Verlangt wird deshalb mindestens ein Vorkommen mitten im Satz.
+    """
+    haeufigkeit, mitten = {}, set()
     for s in segmente:
-        for wort in re.findall(r"\b[A-ZÄÖÜ][\wÄÖÜäöüß-]{3,}\b", s.get("text") or ""):
+        text = s.get("text") or ""
+        for treffer in re.finditer(r"\b[A-ZÄÖÜ][\wÄÖÜäöüß-]{3,}\b", text):
+            wort = treffer.group(0)
             if wort in HAEUFIG:
                 continue
             haeufigkeit[wort] = haeufigkeit.get(wort, 0) + 1
-    # Einmalige Treffer sind meist Satzanfänge, nicht der Rede wert
-    return {w: n for w, n in haeufigkeit.items() if n >= 2}
+            vorher = text[:treffer.start()].rstrip()
+            if vorher and vorher[-1] not in ".!?:":
+                mitten.add(wort)
+    # Einmalige Treffer sind meist Zufall, nicht der Rede wert
+    return {w: n for w, n in haeufigkeit.items() if n >= 2 and w in mitten}
 
 def _kontext_bauen(eigener, glossar, grenze=380):
     """Baut den Erkennungs-Hinweis; das Modell verarbeitet nur wenig Text.

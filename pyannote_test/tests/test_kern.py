@@ -76,6 +76,93 @@ def test_ohne_erkannten_text_bleibt_die_sprecherstruktur():
     assert all(s["text"] is None for s in daten["segmente"])
 
 
+# ---------- Glossar-Korrektur ----------
+
+def _seg(text):
+    return [{"start": 0.0, "ende": 1.0, "label": "A", "text": text}]
+
+
+def test_knapp_daneben_wird_zurechtgerueckt():
+    neu, prot = kern._korrigieren(_seg("Also Marta hat gesagt"), ["Martha"])
+    assert neu[0]["text"] == "Also Martha hat gesagt"
+    assert prot == [{"vorher": "Marta", "nachher": "Martha", "anzahl": 1}]
+
+
+def test_zeitstempel_bleiben_unberuehrt():
+    # Die Zeiten stammen aus dem Audio; eine Textkorrektur darf sie nicht
+    # anfassen, sonst wandert der Text zum falschen Sprecher.
+    vorher = _seg("Marta")
+    neu, _ = kern._korrigieren(vorher, ["Martha"])
+    assert neu[0]["start"] == 0.0 and neu[0]["ende"] == 1.0
+    assert neu[0]["label"] == "A"
+
+
+def test_gelaeufiges_wort_bleibt_stehen():
+    # „Augen“ darf nicht zu „Auge“ werden, nur weil jemand das ins
+    # Glossar geschrieben hat.
+    neu, prot = kern._korrigieren(_seg("in ihren Augen"), ["Auge"])
+    assert neu[0]["text"] == "in ihren Augen" and prot == []
+
+
+def test_mehrdeutiges_bleibt_unangetastet():
+    # Gleich nah an zwei Zielen heißt: die Korrektur wäre geraten.
+    neu, prot = kern._korrigieren(_seg("Herr Mann"), ["Mann", "Wann"])
+    assert "Mann" in neu[0]["text"] and prot == []
+
+
+def test_zu_weit_entfernt_wird_nicht_angefasst():
+    neu, prot = kern._korrigieren(_seg("Der Wagen"), ["Hagen"])
+    assert prot == [], "zwei Ersetzungen bei vier Zeichen sind kein Treffer"
+
+
+def test_kurze_ziele_werden_ignoriert():
+    # Bei drei Zeichen liegt zu viel im Umkreis von eins.
+    assert kern._korrekturziele({"sprecher": ["Ali"]}) == []
+
+
+def test_korrektur_ohne_ziele_aendert_nichts():
+    vorher = _seg("Beliebiger Text")
+    neu, prot = kern._korrigieren(vorher, [])
+    assert neu == vorher and prot == []
+
+
+def test_ziele_bevorzugen_was_der_nutzer_selbst_eintrug():
+    ziele = kern._korrekturziele(
+        {"sprecher": ["Hedi"], "zaehler": {"Spielverhalten": 9, "Einmalig": 2}},
+        eigener="Entwicklungsgespräch, Kita")
+    assert "Entwicklungsgespräch" in ziele, "eigene Eingabe muss zählen"
+    assert "Hedi" in ziele, "benannte Sprecher müssen zählen"
+    assert "Spielverhalten" in ziele, "bestätigte Begriffe zählen"
+    assert "Einmalig" not in ziele, \
+        "kaum belegte Begriffe duerfen nicht zum Ziel werden"
+
+
+def test_sperrliste_haelt_allerweltswoerter_aus_dem_glossar():
+    # Gemessener Ausgangspunkt: „Ihren“ und „Augen“ führten die Rangfolge
+    # an, vor den tatsächlichen Namen.
+    text = ("Ich sehe das in Ihren Augen. Die Gruppe war gut. "
+            "Und Ihren Augen sieht man die Gruppe an.")
+    zaehler = kern._begriffe_zaehlen(_seg(text))
+    for junk in ("Ihren", "Augen", "Gruppe"):
+        assert junk not in zaehler, f"{junk} gehoert nicht ins Glossar"
+
+
+def test_nur_am_satzanfang_zaehlt_nicht_als_begriff():
+    # Am Satzanfang wird jedes Wort großgeschrieben — das weist es nicht
+    # als Substantiv aus.
+    zaehler = kern._begriffe_zaehlen(
+        _seg("Draußen ist es kalt. Draußen bleibt es kalt."))
+    assert "Draußen" not in zaehler
+
+
+def test_echter_fachbegriff_ueberlebt_beide_siebe():
+    zaehler = kern._begriffe_zaehlen(
+        _seg("Beim Entwicklungsgespräch ging es ums Spielverhalten. "
+             "Das Spielverhalten war Thema im Entwicklungsgespräch."))
+    assert zaehler.get("Spielverhalten", 0) >= 2
+    assert zaehler.get("Entwicklungsgespräch", 0) >= 2
+
+
 # ---------- Dekodierung ----------
 
 def test_vorlaufkontext_kommt_nie_ohne_temperaturleiter():

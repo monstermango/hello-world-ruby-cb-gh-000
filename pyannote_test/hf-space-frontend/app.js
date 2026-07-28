@@ -496,6 +496,17 @@ function ergebnisAnzeigen(d, gespeichert) {
       `Künftige Aufnahmen werden dadurch treffsicherer.</div>`;
   }
 
+  // Korrekturen werden ausgewiesen, nicht stillschweigend vorgenommen —
+  // wer den Wortlaut prüfen will, muss sehen, was verändert wurde.
+  if ((daten.korrekturen || []).length) {
+    const k = daten.korrekturen.slice(0, 6)
+      .map((x) => `${esc(x.vorher)} → ${esc(x.nachher)}`).join(", ");
+    const rest = daten.korrekturen.length > 6
+      ? ` und ${daten.korrekturen.length - 6} weitere` : "";
+    gelernt += `<div class="gelernt">✏️ Gegen das Glossar korrigiert: ` +
+      `${k}${rest}.</div>`;
+  }
+
   // Das Backend liefert bereits nur noch die nennenswerten Passagen. Hier
   // wird zusätzlich gekappt: eine Warnung, die man zu Ende scrollen muss,
   // liest niemand.

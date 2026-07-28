@@ -34,6 +34,7 @@ from transformers import pipeline as hf_pipeline
 from kern import (FA_ANTEIL, FA_BLOCK, FA_FENSTER, FARBEN, FENSTER,
                   GLOSSAR_DATEI, GLOSSAR_MAX, GLOSSAR_PROMPT,
                   _begriffe_zaehlen, _decode_optionen, _fenstergrenzen,
+                  _korrekturziele, _korrigieren,
                   _frontmatter, _kontext_bauen, _markdown, _namen_farben,
                   _rangfolge, _romanisieren, _sprecher_bei, _zeit,
                   _zusammenfuegen, glossar_lesen, glossar_schreiben,
@@ -566,6 +567,7 @@ def vorbereiten_api(key, audio, transkript=None, kontext=None):
                       "quelle": quelle, "zeit": time.time(),
                       "dauer": loader.get_duration(wav), "chunks": [],
                       "worte": worte, "fa_zeit": 0.0, "fa_wort": 0,
+                      "eigener": (kontext or "").strip(),
                       "kontext": _kontext_bauen((kontext or "").strip(),
                                                 _glossar_laden())}
     return {"ok": True, "id": sid, "dauer": round(SITZUNGEN[sid]["dauer"], 1),
@@ -642,8 +644,19 @@ def transkribieren_api(key, sid, index):
 
 def _daten_sichern(s):
     if "daten" not in s:
-        s["daten"] = _zusammenfuegen(s["turns"], s["stats"], s["overlaps"],
-                                     s["chunks"], s["dauer"], s.get("sprache"))
+        daten = _zusammenfuegen(s["turns"], s["stats"], s["overlaps"],
+                                s["chunks"], s["dauer"], s.get("sprache"))
+        # Erst nach der Zuordnung korrigieren: die Zeitstempel stammen aus
+        # dem Audio und dürfen von einer Textänderung nicht berührt werden.
+        # Ein mitgeliefertes Transkript bleibt unangetastet — es ist die
+        # Vorlage, nicht die Vermutung.
+        if not s.get("worte"):
+            ziele = _korrekturziele(_glossar_laden(), s.get("eigener", ""))
+            daten["segmente"], daten["korrekturen"] = _korrigieren(
+                daten["segmente"], ziele)
+        else:
+            daten["korrekturen"] = []
+        s["daten"] = daten
     return s["daten"]
 
 
