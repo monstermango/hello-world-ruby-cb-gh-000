@@ -68,10 +68,15 @@ button { font: inherit; border: 0; cursor: pointer; color: inherit; background: 
 .status.warn { background: var(--warn-bg); color: var(--text) }
 
 .mitte { text-align: center }
-.trenner { display: flex; align-items: center; gap: 12px;
-  margin: 16px 0; color: var(--dim); font-size: .85rem }
-.trenner::before, .trenner::after {
-  content: ""; flex: 1; height: 1px; background: var(--linie) }
+.textlink { display: block; width: 100%; min-height: 44px; margin-top: 10px;
+  color: var(--dim); font-size: .92rem; text-align: center;
+  text-decoration: underline; text-underline-offset: 3px }
+.textlink.aktiv { color: var(--gefahr); font-weight: 600;
+  text-decoration: none }
+#rec-status.laeuft::before {
+  content: ""; display: inline-block; width: 9px; height: 9px;
+  margin-right: 7px; border-radius: 50%; background: var(--gefahr);
+  animation: puls 1.4s infinite }
 
 .schritte { margin: 0; padding-left: 26px }
 .schritte li { margin: 10px 0 }

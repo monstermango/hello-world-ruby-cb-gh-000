@@ -209,7 +209,9 @@ $("#btn-record").addEventListener("click", async () => {
       clearInterval(recTimer);
       wakeLockFreigeben();
       $("#btn-record").classList.remove("aktiv");
-      $("#rec-status").textContent = "Hier aufnehmen";
+      $("#btn-record").textContent = "oder direkt hier aufnehmen";
+      $("#rec-status").hidden = true;
+      $("#rec-status").classList.remove("laeuft");
       const endung = mime === "audio/mp4" ? "m4a" : "webm";
       setzeAudio(new File(recChunks, `aufnahme.${endung}`, { type: mime }));
     };
@@ -218,11 +220,13 @@ $("#btn-record").addEventListener("click", async () => {
     recorder.start(5000);
     await wakeLockAnfordern();
     $("#btn-record").classList.add("aktiv");
+    $("#btn-record").textContent = "Aufnahme stoppen";
+    $("#rec-status").hidden = false;
+    $("#rec-status").classList.add("laeuft");
     const startZeit = Date.now();
     recTimer = setInterval(() => {
       const s = (Date.now() - startZeit) / 1000;
-      $("#rec-status").textContent =
-        `Aufnahme läuft … ${zeit(s)} — zum Stoppen tippen`;
+      $("#rec-status").textContent = `Aufnahme läuft … ${zeit(s)}`;
       if (s > 3600 && recorder.state === "recording") {
         recorder.stop();
         toast("Aufnahme nach 60 Minuten automatisch beendet.");
