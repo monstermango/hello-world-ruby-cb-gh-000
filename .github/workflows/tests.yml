@@ -1,0 +1,43 @@
+name: Tests
+
+on:
+  push:
+    paths: ["pyannote_test/**", ".github/workflows/tests.yml"]
+  pull_request:
+    paths: ["pyannote_test/**"]
+  workflow_dispatch:
+
+jobs:
+  kern:
+    name: Fachlogik
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install pytest pyyaml
+      - name: Kerntests
+        run: python -m pytest pyannote_test/tests/test_kern.py -q
+      - name: Syntaxprüfung des Backends
+        run: python -m compileall -q pyannote_test/hf-space/app.py
+
+  oberflaeche:
+    name: Oberfläche im iPhone-Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install playwright
+      - run: python -m playwright install --with-deps chromium
+      - name: Ende-zu-Ende-Test
+        run: python pyannote_test/tests/test_frontend.py
+      - name: Bildschirmfotos sichern
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oberflaeche
+          path: /tmp/fe_*.png
+          if-no-files-found: ignore

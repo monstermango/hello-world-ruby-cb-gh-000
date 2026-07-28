@@ -5,11 +5,13 @@ hier registrierten API-Endpunkte an. Jeder Endpunkt verlangt den
 Zugangsschlüssel (Secret APP_PASS); erst nach der Prüfung wird GPU-Zeit
 verbraucht.
 """
+import hmac
 import os
 import re
 import secrets
 import subprocess
 import tempfile
+import threading
 import time
 import traceback
 import unicodedata
@@ -29,10 +31,19 @@ from pyannote.audio.core.io import Audio
 from pyannote.core import Segment
 from transformers import pipeline as hf_pipeline
 
+from kern import (FA_ANTEIL, FA_BLOCK, FA_FENSTER, FARBEN, FENSTER,
+                  GLOSSAR_DATEI, GLOSSAR_MAX, GLOSSAR_PROMPT,
+                  _begriffe_zaehlen, _fenstergrenzen, _frontmatter,
+                  _kontext_bauen, _markdown, _namen_farben,
+                  _rangfolge, _romanisieren, _sprecher_bei, _zeit,
+                  _zusammenfuegen, glossar_lesen, glossar_schreiben,
+                  pfad_erlaubt)
+
 HF_TOKEN = os.environ["HF_TOKEN"]
 APP_KEY = os.environ["APP_PASS"]
-DATEN_REPO = "Monstermango/diarization-results"
-FRONTEND = "https://monstermango-sprecher-analyse.static.hf.space"
+DATEN_REPO = os.environ.get("DATEN_REPO", "Monstermango/diarization-results")
+FRONTEND = os.environ.get("FRONTEND_URL",
+                          "https://monstermango-sprecher-analyse.static.hf.space")
 ZEITZONE = ZoneInfo("Europe/Berlin")
 
 api = HfApi(token=HF_TOKEN)
@@ -73,29 +84,32 @@ FA_DICT = FA_BUNDLE.get_dict(star="*")
 FA_STERN = FA_DICT["*"]
 fa_modell = FA_BUNDLE.get_model(with_star=True).to(FA_GERAET).eval()
 
-FARBEN = ["#4e79a7", "#f28e2b", "#59a14f", "#e15759",
-          "#b07aa1", "#76b7b2", "#edc948", "#9c755f"]
 
-
-def _zeit(s):
-    m, sec = divmod(int(round(s)), 60)
-    return f"{m}:{sec:02d}"
-
-
-def _namen_farben(labels):
-    namen = {lb: f"Sprecher {i + 1}" for i, lb in enumerate(sorted(labels))}
-    farben = {lb: FARBEN[i % len(FARBEN)] for i, lb in enumerate(sorted(labels))}
-    return namen, farben
+_fehlversuche = {"anzahl": 0, "zeit": 0.0}
 
 
 def _pruefe(key):
-    return bool(key) and key == APP_KEY
+    """Vergleicht laufzeitkonstant und bremst nach Fehlversuchen.
+
+    Der Space ist öffentlich erreichbar; ohne Bremse ließe sich der
+    Schlüssel automatisiert durchprobieren.
+    """
+    gueltig = bool(key) and hmac.compare_digest(str(key), APP_KEY)
+    if gueltig:
+        _fehlversuche["anzahl"] = 0
+        return True
+    jetzt = time.time()
+    if jetzt - _fehlversuche["zeit"] > 300:
+        _fehlversuche["anzahl"] = 0
+    _fehlversuche["anzahl"] += 1
+    _fehlversuche["zeit"] = jetzt
+    time.sleep(min(5.0, 0.25 * _fehlversuche["anzahl"]))
+    return False
 
 
 # Lange Aufnahmen werden in Fenster zerlegt, damit jeder GPU-Aufruf innerhalb
 # des ZeroGPU-Limits bleibt. Die Diarization läuft trotzdem über die gesamte
 # Datei, sonst wären die Sprecher zwischen den Fenstern nicht dieselben.
-FENSTER = 300.0
 
 
 def _diar_dauer(audio_path, num_speakers):
@@ -228,23 +242,6 @@ def _transkribiere_gpu(audio_path, start, ende, sprache=None, kontext=""):
 # muss nicht neu erkannt werden: der Text wird direkt auf die Tonspur gelegt.
 # Das ist schneller als Whisper und übernimmt dessen bessere Textqualität.
 
-FA_FENSTER = 240.0   # Audio je Alignment-Durchgang
-FA_BLOCK = 900.0     # Audio je HTTP-Anfrage (mehrere Durchgänge)
-FA_ANTEIL = 0.6      # bewusst weniger Text anbieten, als das Fenster fasst
-UMLAUTE = {"ä": "a", "ö": "o", "ü": "u", "ß": "ss", "á": "a", "à": "a",
-           "é": "e", "è": "e", "ê": "e", "í": "i", "ó": "o", "ô": "o",
-           "ú": "u", "ñ": "n", "ç": "c"}
-
-
-def _romanisieren(wort):
-    w = wort.lower()
-    for k, v in UMLAUTE.items():
-        w = w.replace(k, v)
-    w = unicodedata.normalize("NFD", w)
-    w = "".join(c for c in w if unicodedata.category(c) != "Mn")
-    return re.sub(r"[^a-z']", "", w)
-
-
 def _align_fenster(audio_path, worte, start, ende):
     """Ordnet Wörter einem Audiofenster zu -> [(index, start_s, ende_s)].
 
@@ -345,67 +342,6 @@ def _align_schritt(s):
     return s["fa_wort"] < len(worte) and s["fa_zeit"] < gesamt - 0.5
 
 
-def _fenstergrenzen(turns, gesamt):
-    """Schnittpunkte möglichst in Sprechpausen legen, damit kein Wort zerfällt."""
-    grenzen, pos = [0.0], 0.0
-    while gesamt - pos > FENSTER:
-        ziel = pos + FENSTER
-        kandidaten = [t["start"] for t in turns if pos + 60 < t["start"] < ziel + 120]
-        grenzen.append(min(kandidaten, key=lambda x: abs(x - ziel))
-                       if kandidaten else ziel)
-        pos = grenzen[-1]
-    grenzen.append(gesamt)
-    return grenzen
-
-
-def _sprecher_bei(turns, zeitpunkt):
-    """Welcher Sprecher ist zu diesem Zeitpunkt aktiv?"""
-    treffer, bester_abstand, ersatz = [], None, None
-    for t in turns:
-        if t["start"] <= zeitpunkt <= t["ende"]:
-            treffer.append(t)
-        else:
-            abstand = min(abs(zeitpunkt - t["start"]), abs(zeitpunkt - t["ende"]))
-            if bester_abstand is None or abstand < bester_abstand:
-                bester_abstand, ersatz = abstand, t
-    if treffer:
-        # Bei Überlappung der längste Redebeitrag — meist die tragende Stimme
-        return max(treffer, key=lambda t: t["ende"] - t["start"])["label"]
-    return ersatz["label"] if ersatz else None
-
-
-def _zusammenfuegen(turns, stats, overlaps, chunks, gesamt, sprache=None):
-    """Baut Sprechersegmente aus den einzeln verorteten Wörtern."""
-    sprache = sprache or next(
-        (c["sprache"] for c in chunks if c.get("sprache")), None)
-
-    segmente = []
-    for wort in sorted(chunks, key=lambda c: c["start"]):
-        label = _sprecher_bei(turns, (wort["start"] + wort["ende"]) / 2)
-        if label is None:
-            continue
-        letztes = segmente[-1] if segmente else None
-        if (letztes and letztes["label"] == label
-                and wort["start"] - letztes["ende"] < 2.0):
-            letztes["ende"] = wort["ende"]
-            letztes["worte"].append(wort["text"])
-        else:
-            segmente.append({"start": wort["start"], "ende": wort["ende"],
-                             "label": label, "worte": [wort["text"]]})
-
-    fertig = [{"start": round(s["start"], 2), "ende": round(s["ende"], 2),
-               "label": s["label"], "text": " ".join(s["worte"])}
-              for s in segmente]
-
-    # Wurde nichts erkannt, wenigstens die Sprecherstruktur zeigen
-    if not fertig:
-        fertig = [{"start": t["start"], "ende": t["ende"],
-                   "label": t["label"], "text": None} for t in turns]
-
-    return {"dauer": round(gesamt, 1), "segmente": fertig, "stats": stats,
-            "overlaps": overlaps, "sprache": sprache}
-
-
 # ---------- Sitzungen ----------
 # Lange Aufnahmen werden über mehrere HTTP-Anfragen verarbeitet: ein einzelner
 # Aufruf würde länger dauern als das ZeroGPU-Token einer Anfrage gültig ist.
@@ -414,15 +350,42 @@ SITZUNGEN = {}
 SITZUNG_TTL = 3 * 3600
 
 
+def _dateien_loeschen(s):
+    """Entfernt Audio vom Server — Originalupload wie umgewandelte Fassung.
+
+    Gesprächsaufnahmen sind das Sensibelste, was durch dieses System läuft;
+    sie dürfen nicht länger liegen bleiben als für die Analyse nötig.
+    """
+    for schluessel in ("wav", "original"):
+        pfad = s.get(schluessel)
+        if not pfad:
+            continue
+        try:
+            os.unlink(pfad)
+        except OSError:
+            pass
+        s[schluessel] = None
+
+
 def _aufraeumen():
     jetzt = time.time()
     for sid in [s for s, v in SITZUNGEN.items()
                 if jetzt - v["zeit"] > SITZUNG_TTL]:
-        try:
-            os.unlink(SITZUNGEN[sid]["wav"])
-        except OSError:
-            pass
+        _dateien_loeschen(SITZUNGEN[sid])
         SITZUNGEN.pop(sid, None)
+
+
+def _aufraeum_schleife():
+    """Räumt auch dann auf, wenn keine neue Aufnahme mehr hochgeladen wird."""
+    while True:
+        time.sleep(600)
+        try:
+            _aufraeumen()
+        except Exception:
+            traceback.print_exc()
+
+
+threading.Thread(target=_aufraeum_schleife, daemon=True).start()
 
 
 def _sitzung(sid):
@@ -433,53 +396,6 @@ def _sitzung(sid):
 
 
 # ---------- Markdown-Ablage ----------
-
-def _markdown(daten, quelle, zeitpunkt, namen=None):
-    std_namen, _ = _namen_farben(daten["stats"])
-    namen = {**std_namen, **(namen or {})}
-    frontmatter = {
-        "titel": f"Aufnahme {zeitpunkt:%Y-%m-%d %H:%M}",
-        "datum": zeitpunkt.isoformat(timespec="seconds"),
-        "dauer_s": daten["dauer"],
-        "sprecher": len(daten["stats"]),
-        "sprache": daten.get("sprache"),
-        "quelle": quelle,
-        "redeanteile_s": {namen[lb]: st["dauer"]
-                          for lb, st in daten["stats"].items()},
-    }
-    md = ["---", yaml.safe_dump(frontmatter, allow_unicode=True,
-                                sort_keys=False).strip(), "---", "",
-          f"# {frontmatter['titel']}", ""]
-
-    gesamt = sum(st["dauer"] for st in daten["stats"].values()) or 1.0
-    md += ["## Redeanteile", "",
-           "| Sprecher | Sprechzeit | Anteil | Redebeiträge |",
-           "|---|---|---|---|"]
-    for lb, st in sorted(daten["stats"].items(),
-                         key=lambda x: x[1]["dauer"], reverse=True):
-        md.append(f"| {namen[lb]} | {_zeit(st['dauer'])} min "
-                  f"| {100 * st['dauer'] / gesamt:.0f} % | {st['turns']} |")
-
-    md += ["", "## Protokoll", ""]
-    for s in daten["segmente"]:
-        if s["text"]:
-            md.append(f"**{namen[s['label']]}** "
-                      f"({_zeit(s['start'])}–{_zeit(s['ende'])}): {s['text']}")
-            md.append("")
-
-    md += ["## Segmente", "", "| Start | Ende | Sprecher |", "|---|---|---|"]
-    for s in daten["segmente"]:
-        md.append(f"| {_zeit(s['start'])} | {_zeit(s['ende'])} | {namen[s['label']]} |")
-
-    if daten["overlaps"]:
-        md += ["", "## Gleichzeitiges Sprechen", "",
-               "| Start | Ende | Beteiligte |", "|---|---|---|"]
-        for o in daten["overlaps"]:
-            wer = ", ".join(namen[lb] for lb in o["wer"])
-            md.append(f"| {_zeit(o['start'])} | {_zeit(o['ende'])} | {wer} |")
-
-    return "\n".join(md) + "\n"
-
 
 def _speichern(md_text, zeitpunkt):
     pfad = f"aufnahmen/{zeitpunkt:%Y-%m-%d_%H%M%S}.md"
@@ -495,23 +411,10 @@ def _speichern(md_text, zeitpunkt):
 # gegeben, damit Eigennamen und Fachbegriffe über Aufnahmen hinweg besser
 # getroffen werden.
 
-GLOSSAR_DATEI = "glossar.md"
 _glossar_cache = {"zeit": 0.0, "daten": None}
 GLOSSAR_TTL = 60.0
 
 # Häufige groß geschriebene Wörter, die als Vorschlag nichts bringen
-HAEUFIG = {
-    "Ich", "Du", "Er", "Sie", "Es", "Wir", "Ihr", "Der", "Die", "Das", "Den",
-    "Dem", "Ein", "Eine", "Einen", "Einem", "Und", "Aber", "Oder", "Also",
-    "Dann", "Doch", "Noch", "Nur", "Schon", "Ja", "Nein", "Genau", "Okay",
-    "Was", "Wie", "Wer", "Wo", "Wann", "Warum", "Weil", "Wenn", "Dass",
-    "Hier", "Da", "Dort", "Jetzt", "Mal", "Ganz", "Sehr", "Mehr", "Gut",
-    "Herr", "Frau", "Vielen", "Dank", "Hallo", "Tag", "Zeit", "Sache",
-}
-
-
-GLOSSAR_MAX = 250          # so viele Begriffe werden überhaupt behalten
-GLOSSAR_PROMPT = 40        # so viele der häufigsten gehen an die Erkennung
 
 
 def _glossar_laden(frisch=False):
@@ -524,27 +427,8 @@ def _glossar_laden(frisch=False):
     try:
         pfad = hf_hub_download(DATEN_REPO, GLOSSAR_DATEI, repo_type="dataset",
                                token=HF_TOKEN, force_download=frisch)
-        abschnitt = None
         with open(pfad, encoding="utf-8") as fh:
-            for zeile in fh:
-                z = zeile.strip()
-                if z.lower().startswith("## sprecher"):
-                    abschnitt = "sprecher"
-                elif z.startswith("## "):
-                    abschnitt = "begriffe"
-                elif z.startswith("- ") and abschnitt:
-                    wert = z[2:].strip()
-                    if not wert:
-                        continue
-                    if abschnitt == "sprecher":
-                        if wert not in sprecher:
-                            sprecher.append(wert)
-                    else:
-                        treffer = re.match(r"^(.*?)\s*\((\d+)\)$", wert)
-                        begriff = (treffer.group(1) if treffer else wert).strip()
-                        anzahl = int(treffer.group(2)) if treffer else 1
-                        if begriff:
-                            zaehler[begriff] = zaehler.get(begriff, 0) + anzahl
+            zaehler, sprecher = glossar_lesen(fh.read())
     except Exception:
         pass
     daten = {"zaehler": zaehler, "sprecher": sprecher,
@@ -553,21 +437,9 @@ def _glossar_laden(frisch=False):
     return daten
 
 
-def _rangfolge(zaehler):
-    """Häufigstes zuerst, bei Gleichstand alphabetisch."""
-    return [b for b, _ in sorted(zaehler.items(), key=lambda p: (-p[1], p[0]))]
-
-
 def _glossar_speichern(zaehler, sprecher):
-    geordnet = _rangfolge(zaehler)[:GLOSSAR_MAX]
-    zeilen = ["# Glossar", "",
-              "Wird automatisch gepflegt und nach Häufigkeit sortiert; die",
-              "obersten Einträge gehen als Vorwissen an die Erkennung.",
-              "", "## Begriffe", ""]
-    zeilen += [f"- {b} ({zaehler[b]})" for b in geordnet]
-    zeilen += ["", "## Sprecher", ""]
-    zeilen += [f"- {s}" for s in sprecher]
-    api.upload_file(path_or_fileobj=("\n".join(zeilen) + "\n").encode("utf-8"),
+    text, geordnet = glossar_schreiben(zaehler, sprecher)
+    api.upload_file(path_or_fileobj=text.encode("utf-8"),
                     path_in_repo=GLOSSAR_DATEI, repo_id=DATEN_REPO,
                     repo_type="dataset", commit_message="Glossar aktualisiert")
     behalten = {b: zaehler[b] for b in geordnet}
@@ -592,39 +464,6 @@ def _glossar_fortschreiben(segmente, sprechernamen):
     except Exception:
         traceback.print_exc()
         return _glossar_laden()
-
-
-def _kontext_bauen(eigener, glossar, grenze=380):
-    """Baut den Erkennungs-Hinweis; das Modell verarbeitet nur wenig Text.
-
-    Die häufigsten Begriffe stehen vorn, damit bei knappem Platz das
-    Wichtigste ankommt.
-    """
-    teile = []
-    for wert in ([eigener] if eigener else []) + glossar["sprecher"] \
-            + glossar["begriffe"][:GLOSSAR_PROMPT]:
-        wert = wert.strip()
-        if wert and wert not in teile:
-            teile.append(wert)
-    ergebnis = ""
-    for teil in teile:
-        kandidat = (ergebnis + ", " + teil) if ergebnis else teil
-        if len(kandidat) > grenze:
-            break
-        ergebnis = kandidat
-    return ergebnis
-
-
-def _begriffe_zaehlen(segmente):
-    """Zählt wiederkehrende Eigennamen und Fachbegriffe im Transkript."""
-    haeufigkeit = {}
-    for s in segmente:
-        for wort in re.findall(r"\b[A-ZÄÖÜ][\wÄÖÜäöüß-]{3,}\b", s.get("text") or ""):
-            if wort in HAEUFIG:
-                continue
-            haeufigkeit[wort] = haeufigkeit.get(wort, 0) + 1
-    # Einmalige Treffer sind meist Satzanfänge, nicht der Rede wert
-    return {w: n for w, n in haeufigkeit.items() if n >= 2}
 
 
 def glossar_api(key):
@@ -661,16 +500,6 @@ def glossar_speichern_api(key, begriffe_text, sprecher_text):
     g = _glossar_laden()
     return {"ok": True, "begriffe": g["begriffe"], "sprecher": g["sprecher"],
             "zaehler": g["zaehler"]}
-
-
-def _frontmatter(text):
-    if text.startswith("---"):
-        try:
-            ende = text.index("\n---", 3)
-            return (yaml.safe_load(text[3:ende]) or {}), text[ende + 4:]
-        except (ValueError, yaml.YAMLError):
-            pass
-    return {}, text
 
 
 # ---------- API-Endpunkte ----------
@@ -725,7 +554,8 @@ def vorbereiten_api(key, audio, transkript=None, kontext=None):
         return {"ok": False, "fehler": "Audioformat konnte nicht gelesen werden."}
     worte = (transkript or "").split()
     sid = secrets.token_urlsafe(16)
-    SITZUNGEN[sid] = {"wav": wav, "quelle": quelle, "zeit": time.time(),
+    SITZUNGEN[sid] = {"wav": wav, "original": audio,
+                      "quelle": quelle, "zeit": time.time(),
                       "dauer": loader.get_duration(wav), "chunks": [],
                       "worte": worte, "fa_zeit": 0.0, "fa_wort": 0,
                       "kontext": _kontext_bauen((kontext or "").strip(),
@@ -817,6 +647,8 @@ def abschliessen_api(key, sid):
     if not s or "turns" not in s:
         return {"ok": False, "fehler": "Sitzung abgelaufen. Bitte erneut starten."}
     daten = _daten_sichern(s)
+    # Ab hier wird das Audio nicht mehr gebraucht — sofort entfernen.
+    _dateien_loeschen(s)
     zeitpunkt = datetime.now(ZEITZONE)
     namen, farben = _namen_farben(daten["stats"])
     glossar = _glossar_fortschreiben(daten["segmente"], [])
@@ -893,8 +725,7 @@ def verlauf_api(key):
 def eintrag_api(key, pfad):
     if not _pruefe(key):
         return {"ok": False, "fehler": "Ungültiger Zugangsschlüssel."}
-    if not (isinstance(pfad, str) and pfad.startswith("aufnahmen/")
-            and pfad.endswith(".md") and ".." not in pfad):
+    if not pfad_erlaubt(pfad):
         return {"ok": False, "fehler": "Ungültiger Pfad."}
     lokal = hf_hub_download(DATEN_REPO, pfad, repo_type="dataset", token=HF_TOKEN)
     with open(lokal, encoding="utf-8") as fh:

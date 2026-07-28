@@ -1,0 +1,24 @@
+name: Gesundheitscheck
+
+# Prüft regelmäßig, ob die App läuft, und startet den Space bei einem
+# Fehlerzustand automatisch neu. Benötigt das Repository-Geheimnis
+# HF_TOKEN (Schreibrecht auf den Space); ohne das Geheimnis wird nur
+# geprüft, nicht geheilt.
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+jobs:
+  pruefen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Erreichbarkeit prüfen und bei Bedarf neu starten
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python pyannote_test/tests/gesundheitscheck.py --heilen

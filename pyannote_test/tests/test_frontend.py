@@ -1,0 +1,188 @@
+"""E2E-Test der PWA im iPhone-Viewport mit gemocktem Backend/CDN."""
+import asyncio
+import http.server
+import tempfile
+import threading
+import wave
+from playwright.async_api import async_playwright
+
+from pathlib import Path
+
+WURZEL = str(Path(__file__).resolve().parents[1] / "hf-space-frontend")
+PORT = 7911
+BROWSER = "/opt/pw-browsers/chromium"
+
+MOCK_CLIENT = """
+export class Client {
+  static async connect(url, optionen) { window._verbindungsOptionen = optionen; return new Client(); }
+  submit(ep, daten) {
+    const self = this;
+    return (async function* () {
+      yield {type: "status", stage: "generating",
+             progress_data: [{desc: "Erkenne Sprecher …"}]};
+      const res = await self.predict(ep, daten);
+      yield {type: "data", data: res.data};
+    })();
+  }
+  async predict(ep, daten) {
+    const key = daten[0];
+    if (key !== "test-key") return {data: [{ok: false, fehler: "Ungültiger Zugangsschlüssel."}]};
+    if (ep === "/glossar") return {data: [{ok: true, begriffe: ["Kita"], sprecher: ["Nils"], zaehler: {Kita: 7}}]};
+    if (ep === "/glossar_speichern") { window._glossar = daten; return {data: [{ok: true, begriffe: (daten[1]||"").split(/\\s*\\n\\s*/).filter(Boolean), sprecher: (daten[2]||"").split(/\\s*\\n\\s*/).filter(Boolean)}]}; }
+    if (ep === "/status") return {data: [{ok: true, token: true}]};
+    if (ep === "/verlauf") return {data: [{ok: true, eintraege: [
+      {pfad: "aufnahmen/a.md", titel: "Aufnahme 2026-07-25 07:04", datum: "2026-07-25T07:04:53+02:00", sprecher: 2, dauer_s: 23.4},
+      {pfad: "aufnahmen/b.md", titel: "Aufnahme 2026-07-25 06:30", datum: "2026-07-25T06:30:27+02:00", sprecher: 3, dauer_s: 107}
+    ]}]};
+    if (ep === "/eintrag") return {data: [{ok: true,
+      frontmatter: {titel: "Aufnahme 2026-07-25 07:04"},
+      body: "# Aufnahme\\n\\n## Redeanteile\\n\\n| Sprecher | Anteil |\\n|---|---|\\n| Sprecher 1 | 58 % |",
+      markdown: "---\\ntitel: x\\n---\\n# Aufnahme"}]};
+    if (ep === "/vorbereiten") return {data: [{ok: true, id: "sid1", dauer: 23.4, modus: daten[2] ? "transkript" : "erkennung", woerter: (daten[2]||"").split(/\s+/).filter(Boolean).length}]};
+    if (ep === "/diarisieren") return {data: [{ok: true, sprecher: 2, abschnitte: 3}]};
+    if (ep === "/transkribieren") {
+      window._abschnitte = (window._abschnitte || 0) + 1;
+      return {data: [{ok: true, index: daten[2], abschnitte: 3, weiter: window._abschnitte < 3}]};
+    }
+    if (ep === "/speichern") {
+      window._gespeicherteNamen = daten[2];
+      return {data: [{ok: true, pfad: "aufnahmen/a.md",
+                      markdown: "---\\ntitel: x\\n---\\n# Aufnahme"}]};
+    }
+    if (ep === "/abschliessen" || ep === "/analysieren") return {data: [{ok: true,
+      zeitpunkt: "2026-07-25T07:04:53+02:00",
+      quelle: "dialog.wav", sprache: "german",
+      vorschlaege: ["Entwicklungsgespräch"], sprecher_bekannt: ["Nils"],
+      namen: {A: "Sprecher 1", B: "Sprecher 2"},
+      farben: {A: "#4e79a7", B: "#f28e2b"},
+      daten: {dauer: 23.4,
+        segmente: [
+          {start: 0, ende: 6.1, label: "A", text: "Guten Tag, hier spricht der erste Sprecher."},
+          {start: 7, ende: 12.7, label: "B", text: "Hallo, ich bin die zweite Sprecherin."},
+          {start: 13.6, ende: 19.3, label: "A", text: "Natürlich, gerne."},
+          {start: 20.2, ende: 23.1, label: "B", text: "Wunderbar!"}],
+        stats: {A: {dauer: 11.7, turns: 2}, B: {dauer: 8.5, turns: 2}},
+        overlaps: [{start: 12.4, ende: 12.7, wer: ["A", "B"]}]}}]};
+    return {data: [{ok: false, fehler: "unbekannt"}]};
+  }
+}
+"""
+
+
+def serve():
+    handler = lambda *a, **k: http.server.SimpleHTTPRequestHandler(
+        *a, directory=WURZEL, **k)
+    http.server.ThreadingHTTPServer(("127.0.0.1", PORT), handler).serve_forever()
+
+
+def _hoerprobe():
+    """Winzige WAV-Datei; der Inhalt spielt keine Rolle, das Backend ist gemockt."""
+    pfad = Path(tempfile.gettempdir()) / "sa_test.wav"
+    if not pfad.exists():
+        with wave.open(str(pfad), "wb") as f:
+            f.setnchannels(1); f.setsampwidth(2); f.setframerate(16000)
+            f.writeframes(b"\0\0" * 16000)
+    return pfad
+
+
+async def main():
+    hoerprobe = _hoerprobe()
+    threading.Thread(target=serve, daemon=True).start()
+    async with async_playwright() as p:
+        start = {"executable_path": BROWSER} if Path(BROWSER).exists() else {}
+        browser = await p.chromium.launch(**start)
+        ctx = await browser.new_context(viewport={"width": 390, "height": 844},
+                                        device_scale_factor=2, is_mobile=True,
+                                        has_touch=True)
+        page = await ctx.new_page()
+        await page.route("**/cdn.jsdelivr.net/npm/@gradio/client/+esm",
+                         lambda r: r.fulfill(content_type="text/javascript",
+                                             body=MOCK_CLIENT))
+        await page.route("**/cdn.jsdelivr.net/npm/marked@12/+esm",
+                         lambda r: r.fulfill(
+                             content_type="text/javascript",
+                             body="export const marked = {parse: (t) => "
+                                  "'<h2>MD</h2><table><tbody><tr><td>x</td>"
+                                  "</tr></tbody></table>'};"))
+        fehler = []
+        page.on("pageerror", lambda e: fehler.append(str(e)))
+        await page.goto(f"http://127.0.0.1:{PORT}/?hf=hf_testtoken", wait_until="networkidle")
+        await page.wait_for_timeout(1000)
+
+        # 1. Login-Overlay sichtbar?
+        assert await page.locator("#login").is_visible(), "Login-Overlay fehlt"
+        await page.screenshot(path=str(Path(tempfile.gettempdir()) / "fe_login.png"))
+
+        # 2. Falscher Schlüssel -> Fehlermeldung
+        await page.fill("#key-input", "falsch")
+        await page.click("#btn-login")
+        await page.wait_for_timeout(800)
+        text = await page.locator("#login-fehler").inner_text()
+        assert "Ungültig" in text, f"Fehlermeldung fehlt: {text!r}"
+
+        # 3. Richtiger Schlüssel -> Overlay verschwindet
+        await page.fill("#key-input", "test-key")
+        await page.click("#btn-login")
+        await page.wait_for_timeout(800)
+        assert not await page.locator("#login").is_visible(), "Overlay bleibt"
+
+        # 4. Analyse mit Datei
+        await page.set_input_files("#file-input", str(hoerprobe))
+        await page.wait_for_timeout(500)
+        assert await page.locator("#audio-panel").is_visible(), "Audio-Panel fehlt"
+        await page.click("#btn-analyse")
+        await page.wait_for_timeout(1000)
+        assert await page.locator(".sa-bubble").count() == 4, "Sprechblasen fehlen"
+        assert "Deutsch" in await page.locator(".sa-meta").inner_text(), \
+            "Sprache fehlt"
+        opt = await page.evaluate("window._verbindungsOptionen")
+        assert opt and opt.get("token") == "hf_testtoken", \
+            f"Token nicht an den Client übergeben: {opt}"
+        abschnitte = await page.evaluate("window._abschnitte")
+        assert abschnitte == 3, f"Nicht alle Abschnitte geholt: {abschnitte}"
+
+        # 4a. Sprecher benennen und speichern
+        assert await page.locator(".namen-feld").count() == 2, "Namensfelder fehlen"
+        await page.locator(".namen-feld").first.fill("Nils")
+        await page.locator("#btn-speichern").dispatch_event("click")
+        await page.wait_for_timeout(800)
+        gespeichert = await page.evaluate("window._gespeicherteNamen")
+        assert gespeichert == {"A": "Nils"}, f"Namen falsch: {gespeichert}"
+        assert await page.locator("#btn-md-laden").is_visible(), "MD-Button fehlt"
+        assert "Nils" in await page.locator(".sa-legs").inner_text(), \
+            "Umbenennung nicht übernommen"
+        await page.screenshot(path=str(Path(tempfile.gettempdir()) / "fe_ergebnis.png"), full_page=True)
+        await page.evaluate("window.scrollTo(0, 0)")
+        await page.wait_for_timeout(300)
+
+        # 5. Verlauf + Eintrag (dispatch_event umgeht ein Koordinaten-Artefakt
+        # der Mobilemulation; elementFromPoint bestätigt die Klickbarkeit)
+        await page.locator('button[data-view="verlauf"]').dispatch_event("click")
+        await page.wait_for_timeout(800)
+        assert await page.locator(".v-card").count() == 2, "Verlaufskarten fehlen"
+        await page.screenshot(path=str(Path(tempfile.gettempdir()) / "fe_verlauf.png"), full_page=True)
+        await page.locator(".v-card").first.dispatch_event("click")
+        await page.wait_for_timeout(800)
+        assert await page.locator("#eintrag-detail").is_visible(), "Detail fehlt"
+        assert await page.locator("#eintrag-inhalt table").count() == 1, "MD-Tabelle fehlt"
+        await page.screenshot(path=str(Path(tempfile.gettempdir()) / "fe_eintrag.png"), full_page=True)
+
+        # 6. Direktlink-Login (?key=...)
+        await page.evaluate("localStorage.clear()")
+        await page.goto(f"http://127.0.0.1:{PORT}/?key=test-key",
+                        wait_until="networkidle")
+        await page.wait_for_timeout(800)
+        assert not await page.locator("#login").is_visible(), "?key greift nicht"
+        url = page.url
+        assert "key=" not in url, f"Schlüssel bleibt in URL: {url}"
+
+        assert not fehler, f"JS-Fehler: {fehler}"
+        await browser.close()
+        print("Alle Frontend-Tests bestanden")
+
+
+if __name__ == "__main__":
+    pass
+
+
+asyncio.run(main())
