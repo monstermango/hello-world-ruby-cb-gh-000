@@ -90,6 +90,17 @@ def _hoerprobe():
     return pfad
 
 
+async def querscrollung(page):
+    """Wie weit die Seite waagerecht scrollt — muss immer 0 bleiben.
+
+    Ein einziges zu breites Element schiebt sonst die gesamte Seite mit,
+    samt Kopfzeile: genau so ging die Überschrift schon einmal verloren.
+    """
+    return await page.evaluate(
+        "Math.max(0, document.documentElement.scrollWidth"
+        " - document.documentElement.clientWidth)")
+
+
 async def main():
     hoerprobe = _hoerprobe()
     threading.Thread(target=serve, daemon=True).start()
@@ -172,21 +183,29 @@ async def main():
             f"Token nicht an den Client übergeben: {opt}"
         abschnitte = await page.evaluate("window._abschnitte")
         assert abschnitte == 3, f"Nicht alle Abschnitte geholt: {abschnitte}"
+        ueber = await querscrollung(page)
+        assert ueber == 0, f"Ergebnis scrollt {ueber}px waagerecht"
 
         # 4a. Das Glossar lernt sichtbar mit
         gelernt = await page.locator(".gelernt").inner_text()
         assert "Entwicklungsgespräch" in gelernt and "Hedi" in gelernt, gelernt
 
-        # 4b. Sprecher benennen und speichern
+        # 4b. Sprecher benennen und speichern. Bewusst mit einem langen
+        #     Namen: die Legende darf dadurch nicht über den Rand wachsen.
+        #     Nach dem Speichern sind die Namensfelder weg, deshalb passiert
+        #     beides in einem Durchgang.
+        LANG = "Dr. Marta Hensen-Wittkowski"
         assert await page.locator(".namen-feld").count() == 2, "Namensfelder fehlen"
-        await page.locator(".namen-feld").first.fill("Nils")
+        await page.locator(".namen-feld").first.fill(LANG)
         await page.locator("#btn-speichern").dispatch_event("click")
         await page.wait_for_timeout(800)
         gespeichert = await page.evaluate("window._gespeicherteNamen")
-        assert gespeichert == {"A": "Nils"}, f"Namen falsch: {gespeichert}"
+        assert gespeichert == {"A": LANG}, f"Namen falsch: {gespeichert}"
         assert await page.locator("#btn-md-laden").is_visible(), "MD-Button fehlt"
-        assert "Nils" in await page.locator(".sa-legs").inner_text(), \
+        assert LANG in await page.locator(".sa-legs").inner_text(), \
             "Umbenennung nicht übernommen"
+        ueber = await querscrollung(page)
+        assert ueber == 0, f"Lange Sprechernamen scrollen {ueber}px waagerecht"
         await page.screenshot(path=str(Path(tempfile.gettempdir()) / "fe_ergebnis.png"), full_page=True)
         await page.evaluate("window.scrollTo(0, 0)")
         await page.wait_for_timeout(300)

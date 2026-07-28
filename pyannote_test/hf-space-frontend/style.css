@@ -156,8 +156,11 @@ summary b { color: var(--text) }
   font-weight: 600; font-size: .85rem; white-space: nowrap }
 .sa-bar { display: flex; height: 16px; border-radius: 999px; overflow: hidden;
   margin: 4px 0 10px }
-.sa-legs { line-height: 2.2 }
-.sa-leg { margin-right: 14px; white-space: nowrap }
+/* Flex mit Umbruch: die Legendeneinträge werden ohne Leerzeichen
+   aneinandergehängt, es gäbe sonst keine Umbruchstelle und die Zeile
+   schöbe die ganze Seite über den rechten Rand. */
+.sa-legs { display: flex; flex-wrap: wrap; gap: 2px 14px; line-height: 2.2 }
+.sa-leg { white-space: nowrap }
 .sa-leg .dim { font-size: .85rem }
 .sa-lane { position: relative; height: 14px; margin: 4px 0;
   background: var(--blase); border-radius: 3px }
