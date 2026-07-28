@@ -15,6 +15,11 @@ FA_FENSTER = 240.0       # Audio je Alignment-Durchgang
 FA_BLOCK = 900.0         # Audio je HTTP-Anfrage beim Einpassen
 FA_ANTEIL = 0.6          # bewusst weniger Text anbieten, als das Fenster fasst
 
+# Gleichzeitiges Sprechen
+UEBERLAPP_MIN = 1.0       # kürzeres ist normales Dazwischenreden
+UEBERLAPP_LUECKE = 5.0    # dichter beieinander gehört zu einer Passage
+UEBERLAPP_PASSAGE = 2.0   # so viel muss zusammenkommen, um zu zählen
+
 # Glossar
 GLOSSAR_DATEI = "glossar.md"
 GLOSSAR_MAX = 250        # so viele Begriffe werden behalten
@@ -60,6 +65,38 @@ def _sprecher_bei(turns, zeitpunkt):
         return max(treffer, key=lambda t: t["ende"] - t["start"])["label"]
     return ersatz["label"] if ersatz else None
 
+def _dichte_stellen(overlaps, mindest=UEBERLAPP_MIN, luecke=UEBERLAPP_LUECKE,
+                    schwelle=UEBERLAPP_PASSAGE):
+    """Fasst gleichzeitiges Sprechen zu den Passagen zusammen, die zählen.
+
+    Drei Siebe hintereinander, weil eines nicht reicht. Kurzes
+    Dazwischenreden — ein „mhm“, ein „ja, genau“ — steckt in jedem Gespräch
+    zu Dutzenden und sagt nichts über den Wortlaut aus; das fällt an
+    `mindest`. Was übrig bleibt, gehört inhaltlich zusammen, wenn es dicht
+    aufeinander folgt, und wird über `luecke` zu einer Passage vereint.
+    Und eine Passage ist erst dann eine Meldung wert, wenn sich darin
+    insgesamt `schwelle` Sekunden Überlappung summieren — ein einzelner
+    Sekundenblitzer kostet ein paar Wörter, eine dichte Folge macht einen
+    ganzen Abschnitt unzuverlässig. Aus siebzig Rohmessungen werden so
+    eine Handvoll Stellen, an denen sich Nachhören wirklich lohnt.
+    """
+    lang = sorted((o for o in overlaps if o["ende"] - o["start"] >= mindest),
+                  key=lambda o: o["start"])
+    passagen = []
+    for o in lang:
+        letzte = passagen[-1] if passagen else None
+        if letzte and o["start"] - letzte["ende"] <= luecke:
+            letzte["ende"] = max(letzte["ende"], o["ende"])
+            letzte["wer"] = sorted(set(letzte["wer"]) | set(o["wer"]))
+            letzte["anzahl"] += 1
+            letzte["summe"] = round(letzte["summe"] + o["ende"] - o["start"], 2)
+        else:
+            passagen.append({"start": o["start"], "ende": o["ende"],
+                             "wer": sorted(o["wer"]), "anzahl": 1,
+                             "summe": round(o["ende"] - o["start"], 2)})
+    return [p for p in passagen if p["summe"] >= schwelle]
+
+
 def _zusammenfuegen(turns, stats, overlaps, chunks, gesamt, sprache=None):
     """Baut Sprechersegmente aus den einzeln verorteten Wörtern."""
     sprache = sprache or next(
@@ -89,7 +126,7 @@ def _zusammenfuegen(turns, stats, overlaps, chunks, gesamt, sprache=None):
                    "label": t["label"], "text": None} for t in turns]
 
     return {"dauer": round(gesamt, 1), "segmente": fertig, "stats": stats,
-            "overlaps": overlaps, "sprache": sprache}
+            "overlaps": _dichte_stellen(overlaps), "sprache": sprache}
 
 def _markdown(daten, quelle, zeitpunkt, namen=None):
     std_namen, _ = _namen_farben(daten["stats"])
@@ -130,7 +167,9 @@ def _markdown(daten, quelle, zeitpunkt, namen=None):
 
     if daten["overlaps"]:
         md += ["", "## Gleichzeitiges Sprechen", "",
-               "| Start | Ende | Beteiligte |", "|---|---|---|"]
+               "Stellen, an denen mehrere so lange gleichzeitig gesprochen "
+               "haben, dass der Wortlaut dort unsicher ist.", "",
+               "| Von | Bis | Beteiligte |", "|---|---|---|"]
         for o in daten["overlaps"]:
             wer = ", ".join(namen[lb] for lb in o["wer"])
             md.append(f"| {_zeit(o['start'])} | {_zeit(o['ende'])} | {wer} |")

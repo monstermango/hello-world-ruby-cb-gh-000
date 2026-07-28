@@ -496,11 +496,18 @@ function ergebnisAnzeigen(d, gespeichert) {
       `Künftige Aufnahmen werden dadurch treffsicherer.</div>`;
   }
 
+  // Das Backend liefert bereits nur noch die nennenswerten Passagen. Hier
+  // wird zusätzlich gekappt: eine Warnung, die man zu Ende scrollen muss,
+  // liest niemand.
   let hinweis = "";
   if (daten.overlaps.length) {
-    const stellen = daten.overlaps
+    const ZEIGE = 5;
+    const stellen = daten.overlaps.slice(0, ZEIGE)
       .map((o) => `${zeit(o.start)}–${zeit(o.ende)}`).join(", ");
-    hinweis = `<div class="sa-warn">⚠️ Gleichzeitiges Sprechen bei: ${stellen}</div>`;
+    const rest = daten.overlaps.length - ZEIGE;
+    hinweis = `<div class="sa-warn">⚠️ Hier haben mehrere gleichzeitig ` +
+      `gesprochen — der Wortlaut ist dort unsicher: ${stellen}` +
+      `${rest > 0 ? ` und ${rest} weitere` : ""}.</div>`;
   }
 
   let abschluss;

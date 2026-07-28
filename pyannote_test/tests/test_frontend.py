@@ -67,7 +67,9 @@ export class Client {
           {start: 13.6, ende: 19.3, label: "A", text: "Natürlich, gerne."},
           {start: 20.2, ende: 23.1, label: "B", text: "Wunderbar!"}],
         stats: {A: {dauer: 11.7, turns: 2}, B: {dauer: 8.5, turns: 2}},
-        overlaps: [{start: 12.4, ende: 12.7, wer: ["A", "B"]}]}}]};
+        // Das Backend liefert nur noch zusammengefasste Passagen, keine
+        // Einzelmessungen — der Mock muss dasselbe tun.
+        overlaps: [{start: 12.4, ende: 15.0, wer: ["A", "B"], anzahl: 2, summe: 2.6}]}}]};
     return {data: [{ok: false, fehler: "unbekannt"}]};
   }
 }
@@ -212,6 +214,12 @@ async def main():
             f"Token nicht an den Client übergeben: {opt}"
         abschnitte = await page.evaluate("window._abschnitte")
         assert abschnitte == 3, f"Nicht alle Abschnitte geholt: {abschnitte}"
+        # Der Hinweis muss sagen, was die Stelle bedeutet — die frühere
+        # Fassung kippte nur eine Wand aus Zeitstempeln auf den Schirm.
+        warnung = await page.locator(".sa-warn").inner_text()
+        assert "unsicher" in warnung, f"Hinweis ohne Aussage: {warnung!r}"
+        assert len(warnung) < 200, f"Hinweis zu lang ({len(warnung)}): {warnung!r}"
+
         gewuenscht = await page.evaluate("window._diarNum")
         assert gewuenscht == 3, \
             f"Sprecherzahl nicht ans Backend durchgereicht: {gewuenscht}"

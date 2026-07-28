@@ -76,13 +76,90 @@ def test_ohne_erkannten_text_bleibt_die_sprecherstruktur():
     assert all(s["text"] is None for s in daten["segmente"])
 
 
+# ---------- Gleichzeitiges Sprechen ----------
+
+def _ue(start, ende, wer=("A", "B")):
+    return {"start": start, "ende": ende, "wer": list(wer)}
+
+
+def test_kurzes_dazwischenreden_wird_verworfen():
+    # Ein „mhm“ ist kein gleichzeitiges Sprechen, das jemanden interessiert.
+    kurz = [_ue(10.0, 10.3), _ue(20.0, 20.9), _ue(30.0, 30.99)]
+    assert kern._dichte_stellen(kurz) == []
+
+
+def test_eine_lange_stelle_reicht_allein_aus():
+    assert len(kern._dichte_stellen([_ue(10.0, 13.0)])) == 1
+
+
+def test_einzelner_sekundenblitzer_ist_keine_meldung_wert():
+    # Über der Mindestdauer, aber unter der Passagen-Schwelle: kostet ein
+    # paar Wörter, taugt aber nicht als Warnung.
+    assert kern._dichte_stellen([_ue(10.0, 11.2)]) == []
+
+
+def test_grenzwerte_der_beiden_schwellen():
+    # Grenzwerte sind die Stelle, an der solche Filter üblicherweise
+    # danebengreifen — beide hier festgenagelt.
+    genau = kern._dichte_stellen([_ue(0.0, kern.UEBERLAPP_PASSAGE)])
+    assert len(genau) == 1, "genau auf der Schwelle muss zählen"
+    knapp = kern.UEBERLAPP_PASSAGE - 0.01
+    assert kern._dichte_stellen([_ue(0.0, knapp)]) == []
+    # Unterhalb der Mindestdauer summiert sich auch Masse nicht auf:
+    # zwanzig „mhm“ ergeben keine unzuverlässige Passage.
+    viele_kurze = [_ue(i * 2.0, i * 2.0 + 0.5) for i in range(20)]
+    assert kern._dichte_stellen(viele_kurze) == []
+
+
+def test_nahe_stellen_werden_zu_einer_passage():
+    dicht = [_ue(60.0, 62.0), _ue(64.0, 66.0), _ue(69.0, 71.0)]
+    passagen = kern._dichte_stellen(dicht)
+    assert len(passagen) == 1, "dichte Folge muss eine Passage ergeben"
+    assert passagen[0]["start"] == 60.0 and passagen[0]["ende"] == 71.0
+    assert passagen[0]["anzahl"] == 3
+
+
+def test_weit_auseinander_bleibt_getrennt():
+    weit = [_ue(60.0, 62.0), _ue(200.0, 202.0)]
+    assert len(kern._dichte_stellen(weit)) == 2
+
+
+def test_beteiligte_einer_passage_werden_vereinigt():
+    p = kern._dichte_stellen([_ue(10.0, 12.0, ("A", "B")),
+                              _ue(13.0, 15.0, ("B", "C"))])
+    assert p[0]["wer"] == ["A", "B", "C"]
+
+
+def test_unsortierte_eingabe_wird_richtig_gebuendelt():
+    p = kern._dichte_stellen([_ue(69.0, 71.0), _ue(60.0, 62.0),
+                              _ue(64.0, 66.0)])
+    assert len(p) == 1 and p[0]["start"] == 60.0
+
+
+def test_verschachtelte_stellen_ueberdehnen_die_passage_nicht():
+    # Eine kurze Stelle innerhalb einer langen darf das Ende nicht
+    # zurückziehen.
+    p = kern._dichte_stellen([_ue(10.0, 30.0), _ue(12.0, 14.0)])
+    assert len(p) == 1 and p[0]["ende"] == 30.0
+
+
+def test_zusammenfuegen_filtert_die_rohmessung():
+    roh = [_ue(1.0, 1.2), _ue(2.0, 2.1), _ue(4.0, 6.0)]
+    daten = kern._zusammenfuegen(TURNS, {"A": {"dauer": 5.0, "turns": 1}},
+                                 roh, [], 9.0)
+    assert len(daten["overlaps"]) == 1, \
+        "Kurzstellen dürfen nicht bis in die Ausgabe durchschlagen"
+
+
 # ---------- Markdown ----------
 
 def _beispiel_daten():
     return {"dauer": 9.0, "sprache": "german",
             "stats": {"A": {"dauer": 5.0, "turns": 1},
                       "B": {"dauer": 3.5, "turns": 1}},
-            "overlaps": [{"start": 4.9, "ende": 5.1, "wer": ["A", "B"]}],
+            # Lang genug, um die Filterung zu überstehen — sonst zeigt das
+            # Beispiel etwas, das es in der Ausgabe gar nicht mehr gibt.
+            "overlaps": [{"start": 4.0, "ende": 6.0, "wer": ["A", "B"]}],
             "segmente": [
                 {"start": 0.5, "ende": 1.6, "label": "A", "text": "Guten Tag"},
                 {"start": 6.0, "ende": 6.4, "label": "B", "text": "Hallo"}]}
