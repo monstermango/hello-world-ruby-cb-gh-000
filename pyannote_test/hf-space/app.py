@@ -5,7 +5,6 @@ hier registrierten API-Endpunkte an. Jeder Endpunkt verlangt den
 Zugangsschlüssel (Secret APP_PASS); erst nach der Prüfung wird GPU-Zeit
 verbraucht.
 """
-import difflib
 import os
 import re
 import secrets
@@ -186,9 +185,8 @@ def _transkribiere_gpu(audio_path, start, ende, sprache=None, kontext=""):
     eingabe = {"array": wellenform.squeeze(0).numpy(), "sampling_rate": sr}
     # Strahlsuche statt gieriger Dekodierung und Kontext aus dem Vorlauf:
     # beides hebt die Trefferquote bei schwierigen Aufnahmen deutlich.
-    # Bewusst ohne prompt_ids: ein Vorwissen-Prompt bringt die Langform-
-    # Dekodierung zum Verstummen. Das Glossar wirkt stattdessen beim
-    # Glätten, wo es ohnehin zuverlässiger greift.
+    # Bewusst ohne prompt_ids — ein Vorwissen-Prompt bringt die
+    # Langform-Dekodierung zum Verstummen.
     gk = {"task": "transcribe", "num_beams": 2, "condition_on_prev_tokens": True}
     if sprache:
         gk["language"] = sprache
@@ -439,16 +437,12 @@ def _sitzung(sid):
 def _markdown(daten, quelle, zeitpunkt, namen=None):
     std_namen, _ = _namen_farben(daten["stats"])
     namen = {**std_namen, **(namen or {})}
-    geglaettet = [s for s in daten["segmente"] if s.get("roh")]
-    markiert = [s for s in geglaettet if s.get("geaendert")]
     frontmatter = {
         "titel": f"Aufnahme {zeitpunkt:%Y-%m-%d %H:%M}",
         "datum": zeitpunkt.isoformat(timespec="seconds"),
         "dauer_s": daten["dauer"],
         "sprecher": len(daten["stats"]),
         "sprache": daten.get("sprache"),
-        "geglaettet": bool(geglaettet),
-        "stark_geaendert": len(markiert),
         "quelle": quelle,
         "redeanteile_s": {namen[lb]: st["dauer"]
                           for lb, st in daten["stats"].items()},
@@ -467,27 +461,10 @@ def _markdown(daten, quelle, zeitpunkt, namen=None):
                   f"| {100 * st['dauer'] / gesamt:.0f} % | {st['turns']} |")
 
     md += ["", "## Protokoll", ""]
-    if markiert:
-        anzahl = (f"{len(markiert)} Stellen" if len(markiert) != 1
-                  else "eine Stelle")
-        md += [f"> ⚠︎ markiert {anzahl}, an denen die Überarbeitung stark "
-               "vom Erkannten abweicht. Der Originalwortlaut steht unter "
-               "„Rohtranskript“.", ""]
     for s in daten["segmente"]:
         if s["text"]:
-            zeichen = " ⚠︎" if s.get("geaendert") else ""
             md.append(f"**{namen[s['label']]}** "
-                      f"({_zeit(s['start'])}–{_zeit(s['ende'])}){zeichen}: "
-                      f"{s['text']}")
-            md.append("")
-
-    if geglaettet:
-        md += ["## Rohtranskript", "",
-               "Unbearbeitete Ausgabe der Spracherkennung, vor dem Glätten.",
-               ""]
-        for s in geglaettet:
-            md.append(f"**{namen[s['label']]}** "
-                      f"({_zeit(s['start'])}–{_zeit(s['ende'])}): {s['roh']}")
+                      f"({_zeit(s['start'])}–{_zeit(s['ende'])}): {s['text']}")
             md.append("")
 
     md += ["## Segmente", "", "| Start | Ende | Sprecher |", "|---|---|---|"]
@@ -648,112 +625,6 @@ def _begriffe_zaehlen(segmente):
             haeufigkeit[wort] = haeufigkeit.get(wort, 0) + 1
     # Einmalige Treffer sind meist Satzanfänge, nicht der Rede wert
     return {w: n for w, n in haeufigkeit.items() if n >= 2}
-
-
-# ---------- Nachbearbeitung durch ein Sprachmodell ----------
-# Die Rohausgabe der Erkennung enthält Hörfehler und zerfaserte Sätze.
-# Ein Sprachmodell glättet sie mit normalem Sprachgefühl — bewusst eng
-# geführt, damit es nichts hinzuerfindet.
-
-# Bewusst ein kleineres Modell: es muss neben Erkennung und Alignment in
-# den Grafikspeicher passen und wird beim Start geladen, damit der erste
-# Aufruf nicht am Herunterladen scheitert.
-LLM_NAME = "Qwen/Qwen2.5-3B-Instruct"
-_llm_cache = {}
-KORR_ZEILEN = 40           # Zeilen je Durchgang
-KORR_WORTE = 500           # Wörter je Durchgang
-
-SYSTEM_PROMPT = (
-    "Du überarbeitest ein automatisch erstelltes Gesprächsprotokoll.\n"
-    "Regeln:\n"
-    "- Korrigiere Hörfehler, Wortverdreher, Grammatik und Zeichensetzung.\n"
-    "- Verwende normalen, natürlichen Wortschatz.\n"
-    "- Erfinde nichts, lasse nichts weg, fasse nichts zusammen.\n"
-    "- Ändere den Sinn nicht; im Zweifel den Text unverändert lassen.\n"
-    "- Antworte mit exakt so vielen Zeilen wie in der Eingabe, jede Zeile\n"
-    "  im Format  «Nummer| Text».  Keine weiteren Erklärungen.\n"
-)
-
-
-def _llm_holen():
-    return _llm_cache["modell"], _llm_cache["tokenizer"]
-
-
-def _llm_laden():
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-    _llm_cache["tokenizer"] = AutoTokenizer.from_pretrained(LLM_NAME)
-    _llm_cache["modell"] = AutoModelForCausalLM.from_pretrained(
-        LLM_NAME, torch_dtype=torch.bfloat16).to("cuda").eval()
-
-
-def _korr_dauer(zeilen, begriffe):
-    worte = sum(len(z.split()) for z in zeilen)
-    return int(min(120, max(45, 30 + worte / 5)))
-
-
-@spaces.GPU(duration=_korr_dauer)
-def _korrigiere_gpu(zeilen, begriffe):
-    modell, tok = _llm_holen()
-    hinweis = ("\nBekannte Namen und Begriffe, die vorkommen können: "
-               + ", ".join(begriffe) + "\n") if begriffe else ""
-    eingabe = "\n".join(f"{i + 1}| {z}" for i, z in enumerate(zeilen))
-    nachrichten = [
-        {"role": "system", "content": SYSTEM_PROMPT + hinweis},
-        {"role": "user", "content": eingabe},
-    ]
-    text = tok.apply_chat_template(nachrichten, tokenize=False,
-                                   add_generation_prompt=True)
-    ids = tok([text], return_tensors="pt").to(modell.device)
-    grenze = int(ids.input_ids.shape[1] * 1.5) + 200
-    with torch.inference_mode():
-        aus = modell.generate(**ids, max_new_tokens=grenze, do_sample=False)
-    antwort = tok.decode(aus[0][ids.input_ids.shape[1]:], skip_special_tokens=True)
-
-    neu = {}
-    for zeile in antwort.splitlines():
-        treffer = re.match(r"^\s*(\d+)\s*\|\s*(.*\S)\s*$", zeile)
-        if treffer:
-            neu[int(treffer.group(1))] = treffer.group(2)
-
-    ergebnis = []
-    for i, alt in enumerate(zeilen):
-        kandidat = neu.get(i + 1)
-        # Schutz vor Auslassungen und Ausschmückungen: bei stark abweichender
-        # Länge lieber das Original behalten.
-        if kandidat:
-            v = len(kandidat.split()) / max(len(alt.split()), 1)
-            if 0.6 <= v <= 1.8:
-                ergebnis.append(kandidat)
-                continue
-        ergebnis.append(alt)
-    return ergebnis
-
-
-_llm_laden()
-
-
-def _stark_geaendert(alt, neu):
-    """Hat das Glätten mehr als Feinschliff gemacht?"""
-    a, b = (alt or "").split(), (neu or "").split()
-    if not a or not b:
-        return False
-    return difflib.SequenceMatcher(None, a, b).ratio() < 0.75
-
-
-def _korr_bloecke(segmente):
-    bloecke, aktuell, worte = [], [], 0
-    for i, s in enumerate(segmente):
-        if not (s.get("text") or "").strip():
-            continue
-        n = len(s["text"].split())
-        if aktuell and (len(aktuell) >= KORR_ZEILEN or worte + n > KORR_WORTE):
-            bloecke.append(aktuell)
-            aktuell, worte = [], 0
-        aktuell.append(i)
-        worte += n
-    if aktuell:
-        bloecke.append(aktuell)
-    return bloecke
 
 
 def glossar_api(key):
@@ -935,51 +806,7 @@ def _daten_sichern(s):
     if "daten" not in s:
         s["daten"] = _zusammenfuegen(s["turns"], s["stats"], s["overlaps"],
                                      s["chunks"], s["dauer"], s.get("sprache"))
-        s["korr_bloecke"] = _korr_bloecke(s["daten"]["segmente"])
-        s["korr_i"] = 0
     return s["daten"]
-
-
-def glaetten_api(key, sid, index=0):
-    """Schritt 4: Text mit Sprachgefühl glätten (blockweise).
-
-    Ein selbst mitgebrachtes Transkript wird nicht angetastet — es ist eine
-    bewusste Entscheidung des Nutzers und soll wortgetreu erhalten bleiben.
-    """
-    if not _pruefe(key):
-        return {"ok": False, "fehler": "Ungültiger Zugangsschlüssel."}
-    s = _sitzung(sid)
-    if not s or "turns" not in s:
-        return {"ok": False, "fehler": "Sitzung abgelaufen. Bitte erneut starten."}
-    if s.get("worte"):
-        _daten_sichern(s)
-        return {"ok": True, "weiter": False, "abschnitte": 0,
-                "uebersprungen": "eigenes Transkript"}
-    daten = _daten_sichern(s)
-    i = s["korr_i"]
-    if i >= len(s["korr_bloecke"]):
-        return {"ok": True, "weiter": False, "abschnitte": len(s["korr_bloecke"])}
-    block = s["korr_bloecke"][i]
-    zeilen = [daten["segmente"][j]["text"] for j in block]
-    for j in block:                       # Rohfassung sichern
-        daten["segmente"][j].setdefault("roh", daten["segmente"][j]["text"])
-    begriffe = _glossar_laden()["begriffe"][:GLOSSAR_PROMPT]
-    eigene = [w.strip() for w in re.split(r"[,;\n]+", s.get("kontext", ""))
-              if w.strip()]
-    try:
-        neu = _korrigiere_gpu(zeilen, eigene + [b for b in begriffe
-                                                if b not in eigene])
-        for j, t in zip(block, neu):
-            seg = daten["segmente"][j]
-            seg["text"] = t
-            seg["geaendert"] = _stark_geaendert(seg["roh"], t)
-    except Exception as e:
-        traceback.print_exc()
-        # Glätten ist Kür — der Rohtext bleibt in jedem Fall erhalten
-        print(f"Glätten übersprungen: {type(e).__name__}: {e}")
-    s["korr_i"] = i + 1
-    return {"ok": True, "weiter": s["korr_i"] < len(s["korr_bloecke"]),
-            "abschnitte": len(s["korr_bloecke"]), "index": i}
 
 
 def abschliessen_api(key, sid):
@@ -1018,10 +845,6 @@ def analysieren_api(key, audio, num_speakers, sprache=None, transkript=None,
         if not tr.get("weiter"):
             break
         i += 1
-    while True:
-        gl = glaetten_api(key, sid)
-        if not gl.get("ok") or not gl.get("weiter"):
-            break
     return abschliessen_api(key, sid)
 
 
@@ -1123,9 +946,7 @@ with gr.Blocks(title="Sprecher-Analyse API") as demo:
         gr.Button("3 · Abschnitt transkribieren").click(
             transkribieren_api, [key, sid, idx], gr.JSON(),
             api_name="transkribieren")
-        gr.Button("4 · Glätten").click(
-            glaetten_api, [key, sid, idx], gr.JSON(), api_name="glaetten")
-        gr.Button("5 · Abschließen").click(
+        gr.Button("4 · Abschließen").click(
             abschliessen_api, [key, sid], gr.JSON(), api_name="abschliessen")
         analyse_json = gr.JSON(label="Analyse-Objekt (aus /analysieren)")
         namen_json = gr.JSON(label='Sprechernamen, z. B. {"SPEAKER_00": "Nils"}')

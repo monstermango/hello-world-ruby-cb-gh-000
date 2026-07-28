@@ -291,19 +291,6 @@ async function abschnitteVerarbeiten(id, abschnitte, eigenerText, ab, melde) {
   }
 }
 
-// Zweiter Durchgang: ein Sprachmodell glättet Hörfehler und Grammatik.
-async function textGlaetten(id, melde) {
-  for (let i = 0; ; i++) {
-    const gl = await rufeHartnaeckig("/glaetten", [schluessel, id, i]);
-    if (!gl.ok) throw new Error(gl.fehler);
-    melde(gl.abschnitte > 1
-      ? `Überarbeite Text — Abschnitt ${Math.min(i + 1, gl.abschnitte)} von ${gl.abschnitte} …`
-      : "Überarbeite Text …");
-    laufSpeichern({ id, phase: "glaetten", i: i + 1 });
-    if (!gl.weiter) break;
-  }
-}
-
 async function analyseRahmen(arbeit) {
   $("#btn-analyse").disabled = true;
   $("#fortsetzen").hidden = true;
@@ -363,7 +350,6 @@ $("#btn-analyse").addEventListener("click", () => {
     laufSpeichern({ id: vor.id, i: 0, abschnitte: dia.abschnitte, eigenerText });
 
     await abschnitteVerarbeiten(vor.id, dia.abschnitte, eigenerText, 0, melde);
-    await textGlaetten(vor.id, melde);
     melde("Stelle Ergebnis zusammen …");
     return await rufeHartnaeckig("/abschliessen", [schluessel, vor.id]);
   });
@@ -393,11 +379,8 @@ $("#btn-fortsetzen").addEventListener("click", () => {
       lauf.abschnitte = dia.abschnitte;
       lauf.i = 0;
     }
-    if (lauf.phase !== "glaetten") {
-      await abschnitteVerarbeiten(lauf.id, lauf.abschnitte, lauf.eigenerText,
-                                  lauf.i, melde);
-    }
-    await textGlaetten(lauf.id, melde);
+    await abschnitteVerarbeiten(lauf.id, lauf.abschnitte, lauf.eigenerText,
+                                lauf.i, melde);
     melde("Stelle Ergebnis zusammen …");
     return await rufeHartnaeckig("/abschliessen", [schluessel, lauf.id]);
   });
@@ -445,22 +428,13 @@ function ergebnisAnzeigen(d, gespeichert) {
   const zeitleiste = `<div class="sa-timeline">${lanes}` +
     `<div class="sa-ticks"><span>0:00</span><span>${zeit(dauer)}</span></div></div>`;
 
-  const markiert = daten.segmente.filter((s) => s.geaendert).length;
   let gespraech = `<div class="sa-h">Gespräch</div>`;
-  if (markiert) {
-    gespraech +=
-      `<div class="dim klein">⚠︎ ${markiert === 1 ? "eine Stelle weicht" :
-        markiert + " Stellen weichen"} stark vom Erkannten ab — antippen ` +
-      `zeigt den Originalwortlaut.</div>`;
-  }
   for (const s of daten.segmente) {
     if (!s.text) continue;
-    const zeichen = s.geaendert
-      ? ` <button class="marke" data-roh="${esc(s.roh || "")}">⚠︎</button>` : "";
     gespraech +=
       `<div class="sa-msg"><div class="sa-rail" style="background:${farben[s.label]}"></div>` +
       `<div class="sa-msg-body"><div class="sa-msg-head">${esc(namen[s.label])} · ` +
-      `${zeit(s.start)}–${zeit(s.ende)}${zeichen}</div>` +
+      `${zeit(s.start)}–${zeit(s.ende)}</div>` +
       `<div class="sa-bubble">${esc(s.text)}</div></div></div>`;
   }
 
@@ -506,21 +480,6 @@ function ergebnisAnzeigen(d, gespeichert) {
     `<div class="card">${meta}<div class="sa-bar">${balken}</div>` +
     `<div class="sa-legs">${legende}</div>${zeitleiste}${gespraech}${hinweis}` +
     `${abschluss}</div>`;
-
-  document.querySelectorAll(".marke").forEach((b) => {
-    b.addEventListener("click", () => {
-      const blase = b.closest(".sa-msg-body").querySelector(".sa-bubble");
-      let roh = blase.nextElementSibling;
-      if (roh && roh.classList.contains("roh")) {
-        roh.remove();
-        return;
-      }
-      roh = document.createElement("div");
-      roh.className = "roh";
-      roh.textContent = "Erkannt: " + b.dataset.roh;
-      blase.after(roh);
-    });
-  });
 
   if (gespeichert) {
     $("#btn-md-laden").addEventListener("click", () => mdHerunterladen());
