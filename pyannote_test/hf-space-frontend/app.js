@@ -376,8 +376,6 @@ $("#btn-analyse").addEventListener("click", () => {
   analyseRahmen(async (melde) => {
     const n = parseInt($("#num-speakers").value, 10) || 0;
 
-    // Jeder Schritt ist eine eigene Anfrage: eine einzelne lange Anfrage
-    // würde das Zeitlimit der GPU-Zuteilung überschreiten.
     melde("Lade Audio hoch …");
     const transkript = $("#transkript").value.trim();
     const kontext = $("#kontext").value.trim();
@@ -385,24 +383,110 @@ $("#btn-analyse").addEventListener("click", () => {
     const vor = await rufeHartnaeckig(
       "/vorbereiten", [schluessel, audioDatei, transkript, kontext]);
     if (!vor.ok) throw new Error(vor.fehler);
-    const eigenerText = vor.modus === "transkript";
-    laufSpeichern({ id: vor.id, i: 0, abschnitte: null, eigenerText });
 
-    melde("Erkenne Sprecher …");
     const spr = $("#sprache").value;
     localStorage.setItem("sa_sprache", spr);
-    const dia = await rufeHartnaeckig("/diarisieren",
-                                      [schluessel, vor.id, n, spr]);
-    if (!dia.ok) throw new Error(dia.fehler);
-    laufSpeichern({ id: vor.id, i: 0, abschnitte: dia.abschnitte, eigenerText });
 
-    await abschnitteVerarbeiten(vor.id, dia.abschnitte, eigenerText, 0, melde);
-    melde("Stelle Ergebnis zusammen …");
-    return await rufeHartnaeckig("/abschliessen", [schluessel, vor.id]);
+    // Ab hier läuft die Arbeit im Space weiter, auch wenn das Telefon
+    // schläft oder die App geschlossen wird. Der Browser fragt nur noch
+    // nach dem Stand.
+    const start = await rufeHartnaeckig("/starten",
+                                        [schluessel, vor.id, n, spr]);
+    if (!start.ok) throw new Error(start.fehler);
+    auftragSpeichern(start.auftrag);
+    benachrichtigungAnbieten();
+    return await auftragVerfolgen(start.auftrag, melde);
   });
 });
 
+// ---------- Aufträge ----------
+
+function auftragSpeichern(jid) {
+  localStorage.setItem("sa_auftrag", JSON.stringify({ id: jid, ts: Date.now() }));
+}
+
+function auftragVergessen() {
+  localStorage.removeItem("sa_auftrag");
+}
+
+async function auftragVerfolgen(jid, melde) {
+  // Reines Nachfragen — bricht die Verbindung ab, läuft die Verarbeitung
+  // trotzdem weiter und wird beim nächsten Öffnen wieder eingesammelt.
+  for (;;) {
+    let j;
+    try {
+      j = await rufe("/auftrag", [schluessel, jid]);
+    } catch (e) {
+      await new Promise((f) => setTimeout(f, 5000));
+      continue;
+    }
+    if (!j.ok) throw new Error(j.fehler);
+    if (j.stand === "fertig") {
+      auftragVergessen();
+      return j.ergebnis;
+    }
+    if (j.stand === "fehler") {
+      auftragVergessen();
+      throw new Error(j.fehler || "Verarbeitung fehlgeschlagen");
+    }
+    const von = j.von || 0, bis = j.bis || 1;
+    melde(bis > 1 ? `${j.schritt} … ${von}/${bis}` : `${j.schritt} …`);
+    await new Promise((f) => setTimeout(f, 4000));
+  }
+}
+
+function laufenderAuftrag() {
+  try {
+    const a = JSON.parse(localStorage.getItem("sa_auftrag") || "null");
+    if (a && a.id && Date.now() - a.ts < 6 * 3600 * 1000) return a.id;
+  } catch (e) { /* verworfen */ }
+  return null;
+}
+
+// ---------- Benachrichtigung ----------
+
+async function benachrichtigungAnbieten() {
+  // Auf dem iPhone geht Web Push nur in der zum Home-Bildschirm
+  // hinzugefügten App, und die Erlaubnis muss aus einer Nutzergeste
+  // kommen. Der Start der Analyse ist genau so eine.
+  if (!("Notification" in window) || !("serviceWorker" in navigator)) return;
+  if (Notification.permission === "denied") return;
+  if (localStorage.getItem("sa_push") === "aus") return;
+  try {
+    if (Notification.permission === "default") {
+      if (await Notification.requestPermission() !== "granted") {
+        localStorage.setItem("sa_push", "aus");
+        return;
+      }
+    }
+    const reg = await navigator.serviceWorker.ready;
+    let abo = await reg.pushManager.getSubscription();
+    if (!abo) {
+      const k = await rufe("/push_schluessel", [schluessel]);
+      if (!k.ok) return;
+      abo = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: k.schluessel,
+      });
+    }
+    await rufe("/push_anmelden", [schluessel, abo.toJSON()]);
+  } catch (e) {
+    // Benachrichtigungen sind Zugabe — ihr Fehlschlag darf die Analyse
+    // nicht aufhalten.
+    console.warn("Push nicht eingerichtet:", e);
+  }
+}
+
 function fortsetzenAnbieten() {
+  // Läuft im Space noch ein Auftrag, wird er beim Öffnen wieder
+  // eingesammelt — auch wenn die App zwischendurch geschlossen war.
+  if (laufenderAuftrag()) {
+    $("#fortsetzen").hidden = false;
+    $("#fortsetzen-text").textContent =
+      "Eine Analyse läuft im Hintergrund weiter.";
+    $("#btn-fortsetzen").textContent = "Stand ansehen";
+    return;
+  }
   let lauf;
   try {
     lauf = JSON.parse(localStorage.getItem("sa_lauf") || "null");
@@ -414,6 +498,11 @@ function fortsetzenAnbieten() {
 }
 
 $("#btn-fortsetzen").addEventListener("click", () => {
+  const jid = laufenderAuftrag();
+  if (jid) {
+    analyseRahmen((melde) => auftragVerfolgen(jid, melde));
+    return;
+  }
   const lauf = JSON.parse(localStorage.getItem("sa_lauf") || "null");
   if (!lauf) return;
   analyseRahmen(async (melde) => {

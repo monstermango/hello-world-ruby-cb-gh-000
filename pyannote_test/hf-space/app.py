@@ -649,6 +649,193 @@ def _nach_wav(pfad):
     return ziel
 
 
+# ---------- Hintergrundverarbeitung ----------
+# Bisher war der Browser der Taktgeber: er rief Schritt für Schritt auf.
+# Schläft das Telefon, steht die Verarbeitung. Der Space kann die Schritte
+# aber selbst durchlaufen — nachgemessen laufen sie dabei auf dem
+# PRO-Kontingent des Space-Besitzers, nicht auf dem anonymen.
+
+AUFTRAEGE = {}
+AUFTRAG_TTL = 6 * 3600
+
+
+def _auftrag_lauf(jid, sid, num_speakers, sprache):
+    """Fährt die komplette Kette durch, ohne dass jemand zusieht."""
+    j = AUFTRAEGE[jid]
+    try:
+        r = diarisieren_api(APP_KEY, sid, num_speakers, sprache)
+        if not r.get("ok"):
+            raise RuntimeError(r.get("fehler", "Sprechererkennung fehlgeschlagen"))
+        gesamt = max(1, int(r.get("abschnitte") or 1))
+        j.update(stand="laeuft", schritt="Text erkennen", von=0, bis=gesamt)
+
+        i, getan = 0, 0
+        while True:
+            a = transkribieren_api(APP_KEY, sid, i)
+            if not a.get("ok"):
+                raise RuntimeError(a.get("fehler", "Transkription fehlgeschlagen"))
+            getan += 1
+            j.update(von=min(getan, gesamt))
+            if not a.get("weiter"):
+                break
+            # Beim Einpassen zählt das Backend selbst weiter, bei der
+            # Fenster-Erkennung der Index.
+            i = a.get("index", i) + 1 if "index" in a else i
+
+        j.update(schritt="Zusammenstellen")
+        e = abschliessen_api(APP_KEY, sid)
+        if not e.get("ok"):
+            raise RuntimeError(e.get("fehler", "Abschluss fehlgeschlagen"))
+        j.update(stand="fertig", ergebnis=e, zeit=time.time())
+        _push_senden("Analyse fertig",
+                     f"{len(e.get('daten', {}).get('stats', {}))} Sprecher, "
+                     f"{_zeit(e.get('daten', {}).get('dauer', 0))} min")
+    except Exception as ex:
+        traceback.print_exc()
+        j.update(stand="fehler", fehler=f"{type(ex).__name__}: {ex}",
+                 zeit=time.time())
+        _push_senden("Analyse fehlgeschlagen", str(ex)[:120])
+
+
+def starten_api(key, sid, num_speakers, sprache=None):
+    """Stößt die Verarbeitung an und gibt sofort zurück."""
+    if not _pruefe(key):
+        return {"ok": False, "fehler": "Ungültiger Zugangsschlüssel."}
+    if not _sitzung(sid):
+        return {"ok": False, "fehler": "Sitzung abgelaufen. Bitte erneut starten."}
+    jid = secrets.token_urlsafe(12)
+    AUFTRAEGE[jid] = {"stand": "laeuft", "schritt": "Sprecher erkennen",
+                      "von": 0, "bis": 1, "sid": sid, "zeit": time.time()}
+    threading.Thread(target=_auftrag_lauf,
+                     args=(jid, sid, num_speakers, sprache),
+                     daemon=True).start()
+    return {"ok": True, "auftrag": jid}
+
+
+def auftrag_api(key, jid):
+    """Fragt den Stand ab. Der Browser darf zwischendurch schlafen."""
+    if not _pruefe(key):
+        return {"ok": False, "fehler": "Ungültiger Zugangsschlüssel."}
+    j = AUFTRAEGE.get(jid)
+    if not j:
+        return {"ok": False, "fehler": "Auftrag unbekannt oder abgelaufen."}
+    antwort = {k: v for k, v in j.items() if k != "ergebnis"}
+    if j.get("stand") == "fertig":
+        antwort["ergebnis"] = j["ergebnis"]
+    return {"ok": True, **antwort}
+
+
+# ---------- Benachrichtigung ----------
+# Web Push funktioniert auf dem iPhone nur für eine zum Home-Bildschirm
+# hinzugefügte App. Der Inhalt ist Ende-zu-Ende verschlüsselt: Apples
+# Zustelldienst sieht nur Chiffrat, keine Gesprächsdaten.
+
+PUSH_DATEI = "push.json"
+_push_cache = {"daten": None}
+
+
+def _push_zustand():
+    if _push_cache["daten"] is None:
+        daten = {"vapid_pem": None, "abos": []}
+        try:
+            pfad = hf_hub_download(DATEN_REPO, PUSH_DATEI, repo_type="dataset",
+                                   token=HF_TOKEN, force_download=True)
+            with open(pfad, encoding="utf-8") as fh:
+                daten = json.load(fh)
+        except Exception:
+            pass
+        if not daten.get("vapid_pem"):
+            # Beim ersten Mal selbst erzeugen. Der private Schlüssel liegt
+            # im privaten Datensatz — dieselbe Vertrauensgrenze wie die
+            # Protokolle, und niemand muss ein Geheimnis von Hand setzen.
+            from cryptography.hazmat.primitives.asymmetric import ec
+            from cryptography.hazmat.primitives import serialization
+            k = ec.generate_private_key(ec.SECP256R1())
+            daten["vapid_pem"] = k.private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.PKCS8,
+                serialization.NoEncryption()).decode()
+            _push_sichern(daten)
+        _push_cache["daten"] = daten
+    return _push_cache["daten"]
+
+
+def _push_sichern(daten):
+    api.upload_file(path_or_fileobj=json.dumps(daten).encode("utf-8"),
+                    path_in_repo=PUSH_DATEI, repo_id=DATEN_REPO,
+                    repo_type="dataset", commit_message="Push aktualisiert")
+    _push_cache["daten"] = daten
+
+
+def _push_oeffentlich():
+    from cryptography.hazmat.primitives import serialization
+    k = serialization.load_pem_private_key(
+        _push_zustand()["vapid_pem"].encode(), password=None)
+    roh = k.public_key().public_bytes(
+        serialization.Encoding.X962,
+        serialization.PublicFormat.UncompressedPoint)
+    import base64
+    return base64.urlsafe_b64encode(roh).decode().rstrip("=")
+
+
+def _push_senden(titel, text):
+    """Verschickt an alle angemeldeten Geräte. Fehler bleiben folgenlos."""
+    try:
+        from pywebpush import webpush, WebPushException
+    except ImportError:
+        return
+    z = _push_zustand()
+    uebrig, geaendert = [], False
+    for abo in z.get("abos", []):
+        try:
+            webpush(subscription_info=abo,
+                    data=json.dumps({"titel": titel, "text": text}),
+                    vapid_private_key=z["vapid_pem"],
+                    vapid_claims={"sub": "mailto:app@example.invalid"})
+            uebrig.append(abo)
+        except WebPushException as e:
+            # 404/410 heißt: Gerät hat abgemeldet. Eintrag darf weg.
+            code = getattr(getattr(e, "response", None), "status_code", None)
+            if code in (404, 410):
+                geaendert = True
+            else:
+                uebrig.append(abo)
+        except Exception:
+            uebrig.append(abo)
+    if geaendert:
+        z["abos"] = uebrig
+        try:
+            _push_sichern(z)
+        except Exception:
+            traceback.print_exc()
+
+
+def push_schluessel_api(key):
+    if not _pruefe(key):
+        return {"ok": False, "fehler": "Ungültiger Zugangsschlüssel."}
+    try:
+        return {"ok": True, "schluessel": _push_oeffentlich()}
+    except Exception as e:
+        return {"ok": False, "fehler": str(e)}
+
+
+def push_anmelden_api(key, abo):
+    if not _pruefe(key):
+        return {"ok": False, "fehler": "Ungültiger Zugangsschlüssel."}
+    if not isinstance(abo, dict) or not abo.get("endpoint"):
+        return {"ok": False, "fehler": "Ungültige Anmeldung."}
+    try:
+        z = _push_zustand()
+        abos = [a for a in z.get("abos", [])
+                if a.get("endpoint") != abo["endpoint"]]
+        abos.append(abo)
+        z["abos"] = abos[-10:]      # ein paar Geräte reichen
+        _push_sichern(z)
+    except Exception as e:
+        return {"ok": False, "fehler": str(e)}
+    return {"ok": True, "geraete": len(z["abos"])}
+
+
 def status_api(key, request: gr.Request = None):
     """Meldet, ob die Anfrage mit HF-Token ankommt (GPU-Kontingent-Zuordnung)."""
     if not _pruefe(key):
@@ -1012,6 +1199,18 @@ with gr.Blocks(title="Sprecher-Analyse API") as demo:
         out_speichern = gr.JSON()
         b_speichern.click(speichern_api, [key, analyse_json, namen_json],
                           out_speichern, api_name="speichern")
+        b_starten = gr.Button("Im Hintergrund verarbeiten")
+        b_starten.click(starten_api,
+                        [key, sid, gr.Number(value=0), gr.Textbox(value="german")],
+                        gr.JSON(), api_name="starten")
+        gr.Button("Auftragsstand").click(
+            auftrag_api, [key, gr.Textbox(label="Auftrag")], gr.JSON(),
+            api_name="auftrag")
+        gr.Button("Push-Schlüssel").click(
+            push_schluessel_api, [key], gr.JSON(), api_name="push_schluessel")
+        gr.Button("Push anmelden").click(
+            push_anmelden_api, [key, gr.JSON(label="Abo")], gr.JSON(),
+            api_name="push_anmelden")
         falsch_feld = gr.Textbox(label="Falsch erkannt")
         richtig_feld = gr.Textbox(label="Richtig")
         gr.Button("Korrektur merken").click(

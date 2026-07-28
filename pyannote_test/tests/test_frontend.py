@@ -31,6 +31,17 @@ export class Client {
     if (ep === "/glossar_speichern") { window._glossar = daten; return {data: [{ok: true, begriffe: (daten[1]||"").split(/\\s*\\n\\s*/).filter(Boolean), sprecher: (daten[2]||"").split(/\\s*\\n\\s*/).filter(Boolean)}]}; }
     // Bewusst langsam: nur so faellt auf, wenn der Aufrufer die Antwort
     // nicht abwartet und den Token-Status zu frueh abliest.
+    if (ep === "/starten") { window._diarNum = daten[2]; window._auftragStand = 0; return {data: [{ok: true, auftrag: "j1"}]}; }
+    if (ep === "/auftrag") {
+      window._auftragStand = (window._auftragStand || 0) + 1;
+      // Erst laufend, dann fertig — so wird auch das Nachfragen geprüft.
+      if (window._auftragStand < 2) {
+        return {data: [{ok: true, stand: "laeuft", schritt: "Text erkennen", von: 1, bis: 3}]};
+      }
+      return {data: [{ok: true, stand: "fertig", ergebnis: window._ergebnis}]};
+    }
+    if (ep === "/push_schluessel") return {data: [{ok: true, schluessel: "BTestKey"}]};
+    if (ep === "/push_anmelden") { window._pushAbo = daten[1]; return {data: [{ok: true, geraete: 1}]}; }
     if (ep === "/lernen") { window._gelernt = daten; return {data: [{ok: true, falsch: daten[1], richtig: daten[2]}]}; }
     if (ep === "/status") {
       await new Promise((f) => setTimeout(f, 400));
@@ -55,7 +66,11 @@ export class Client {
       return {data: [{ok: true, pfad: "aufnahmen/a.md",
                       markdown: "---\\ntitel: x\\n---\\n# Aufnahme"}]};
     }
-    if (ep === "/abschliessen" || ep === "/analysieren") return {data: [{ok: true,
+    if (ep === "/abschliessen" || ep === "/analysieren") return {data: [window._ergebnis]};
+    return {data: [{ok: false, fehler: "unbekannt"}]};
+  }
+}
+window._ergebnis = {ok: true,
       zeitpunkt: "2026-07-25T07:04:53+02:00",
       quelle: "dialog.wav", sprache: "german",
       neue_begriffe: ["Entwicklungsgespräch", "Hedi"], sprecher_bekannt: ["Nils"],
@@ -75,10 +90,7 @@ export class Client {
         stats: {A: {dauer: 11.7, turns: 2}, B: {dauer: 8.5, turns: 2}},
         // Das Backend liefert nur noch zusammengefasste Passagen, keine
         // Einzelmessungen — der Mock muss dasselbe tun.
-        overlaps: [{start: 12.4, ende: 15.0, wer: ["A", "B"], anzahl: 2, summe: 2.6}]}}]};
-    return {data: [{ok: false, fehler: "unbekannt"}]};
-  }
-}
+        overlaps: [{start: 12.4, ende: 15.0, wer: ["A", "B"], anzahl: 2, summe: 2.6}]}};
 """
 
 
@@ -211,15 +223,17 @@ async def main():
         await page.fill("#num-speakers", "3")
 
         await page.click("#btn-analyse")
-        await page.wait_for_timeout(1000)
+        await page.wait_for_timeout(12000)
         assert await page.locator(".sa-bubble").count() == 4, "Sprechblasen fehlen"
         assert "Deutsch" in await page.locator(".sa-meta").inner_text(), \
             "Sprache fehlt"
         opt = await page.evaluate("window._verbindungsOptionen")
         assert opt and opt.get("token") == "hf_testtoken", \
             f"Token nicht an den Client übergeben: {opt}"
+        # Der Browser darf die Abschnitte nicht mehr selbst durchlaufen.
         abschnitte = await page.evaluate("window._abschnitte")
-        assert abschnitte == 3, f"Nicht alle Abschnitte geholt: {abschnitte}"
+        assert not abschnitte, \
+            f"Client treibt die Verarbeitung noch selbst: {abschnitte}"
         # Der Hinweis muss sagen, was die Stelle bedeutet — die frühere
         # Fassung kippte nur eine Wand aus Zeitstempeln auf den Schirm.
         warnung = await page.locator(".w-overlap").inner_text()
@@ -251,6 +265,12 @@ async def main():
         gewuenscht = await page.evaluate("window._diarNum")
         assert gewuenscht == 3, \
             f"Sprecherzahl nicht ans Backend durchgereicht: {gewuenscht}"
+
+        # Die Verarbeitung läuft jetzt im Space; der Browser fragt nur nach.
+        # Genau das muss geprüft sein — sonst hängt sie wieder am Telefon.
+        auftrag = await page.evaluate("window._auftragStand")
+        assert auftrag and auftrag >= 2, \
+            f"Auftrag wurde nicht nachverfolgt: {auftrag}"
         ueber = await querscrollung(page)
         assert ueber == 0, f"Ergebnis scrollt {ueber}px waagerecht"
 
