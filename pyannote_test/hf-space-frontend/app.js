@@ -82,6 +82,7 @@ async function loginPruefen(neuerKey) {
   schluessel = neuerKey;
   localStorage.setItem("sa_key", neuerKey);
   $("#login").hidden = true;
+  einstellungenSchliessbar();
   verlaufAnzeigen(antwort.eintraege);
   tokenStatusPruefen();
   fortsetzenAnbieten();
@@ -137,10 +138,36 @@ $("#key-input").addEventListener("keydown", (e) => {
   if (e.key === "Enter") $("#btn-login").click();
 });
 
-$("#btn-key").addEventListener("click", () => {
+// Der Dialog lässt sich nur schließen, wenn bereits ein Schlüssel
+// hinterlegt ist — sonst stünde man vor einer unbenutzbaren App.
+function einstellungenSchliessbar() {
+  $("#btn-schliessen").hidden = !schluessel;
+}
+
+function einstellungenOeffnen() {
   $("#key-input").value = schluessel;
   $("#hf-input").value = hfToken;
+  $("#login-fehler").textContent = "";
+  einstellungenSchliessbar();
   $("#login").hidden = false;
+}
+
+function einstellungenSchliessen() {
+  if (!schluessel) return;
+  $("#login").hidden = true;
+}
+
+$("#btn-key").addEventListener("click", einstellungenOeffnen);
+$("#btn-schliessen").addEventListener("click", einstellungenSchliessen);
+
+// Tippen neben das Blatt schließt ebenfalls — auf dem Handy die
+// naheliegendste Geste.
+$("#login").addEventListener("click", (e) => {
+  if (e.target === $("#login")) einstellungenSchliessen();
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("#login").hidden) einstellungenSchliessen();
 });
 
 // ---------- Navigation ----------

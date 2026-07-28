@@ -126,6 +126,24 @@ async def main():
         await page.wait_for_timeout(800)
         assert not await page.locator("#login").is_visible(), "Overlay bleibt"
 
+        # 3b. Einstellungen lassen sich öffnen und wieder schließen
+        await page.locator("#btn-key").dispatch_event("click")
+        await page.wait_for_timeout(300)
+        assert await page.locator("#login").is_visible(), "Dialog öffnet nicht"
+        assert await page.locator("#btn-schliessen").is_visible(), \
+            "kein Schließen-Knopf"
+        await page.locator("#btn-schliessen").dispatch_event("click")
+        await page.wait_for_timeout(300)
+        assert not await page.locator("#login").is_visible(), \
+            "Dialog laesst sich nicht schliessen"
+        # Auch neben das Blatt tippen schließt
+        await page.locator("#btn-key").dispatch_event("click")
+        await page.wait_for_timeout(300)
+        await page.locator("#login").dispatch_event("click")
+        await page.wait_for_timeout(300)
+        assert not await page.locator("#login").is_visible(), \
+            "Tippen neben das Blatt schliesst nicht"
+
         # 4. Analyse mit Datei
         await page.set_input_files("#file-input", str(hoerprobe))
         await page.wait_for_timeout(500)

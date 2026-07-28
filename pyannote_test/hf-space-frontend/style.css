@@ -62,7 +62,12 @@ button { font: inherit; border: 0; cursor: pointer; color: inherit; background: 
   min-height: 44px; padding: 0 16px; border-radius: 12px;
   border: 1px solid var(--linie); color: var(--primary); font-weight: 600;
 }
-.icon-btn { min-width: 44px; min-height: 44px; font-size: 1.2rem; color: var(--dim) }
+.icon-btn { min-width: 44px; min-height: 44px; font-size: 1.35rem;
+  color: var(--dim); display: inline-flex; align-items: center;
+  justify-content: center }
+.icon-btn:active { opacity: .6 }
+.sheet-kopf { display: flex; align-items: center; justify-content: space-between;
+  margin: -6px -6px 6px 0 }
 .status { font-size: .75rem; padding: 3px 9px; border-radius: 999px;
   background: var(--blase); color: var(--dim); white-space: nowrap }
 .status.warn { background: var(--warn-bg); color: var(--text) }
