@@ -76,15 +76,53 @@ def _namen_farben(labels):
     farben = {lb: FARBEN[i % len(FARBEN)] for i, lb in enumerate(sorted(labels))}
     return namen, farben
 
+def _sprechpausen(turns):
+    """Die echten Stillen: Lücken in der Vereinigung aller Redebeiträge.
+
+    Ein Sprecherwechsel ist noch keine Pause — der nächste setzt oft ein,
+    während der vorige noch redet. Erst die zusammengelegte Sprechzeit
+    zeigt, wo tatsächlich niemand spricht.
+    """
+    if not turns:
+        return []
+    belegt = []
+    for t in sorted(turns, key=lambda t: t["start"]):
+        if belegt and t["start"] <= belegt[-1][1]:
+            belegt[-1][1] = max(belegt[-1][1], t["ende"])
+        else:
+            belegt.append([t["start"], t["ende"]])
+    return [(belegt[i][1], belegt[i + 1][0]) for i in range(len(belegt) - 1)
+            if belegt[i + 1][0] > belegt[i][1]]
+
+
 def _fenstergrenzen(turns, gesamt):
-    """Schnittpunkte möglichst in Sprechpausen legen, damit kein Wort zerfällt."""
+    """Schnittpunkte in die größte Sprechpause nahe der Zielmarke legen.
+
+    Jeder Schnitt kostet Qualität: Whisper verliert am Fensteranfang und
+    -ende Kontext, und ein mitten im Wort getrenntes Fenster erzeugt an
+    beiden Seiten Unsinn. Landet der Schnitt dagegen in echter Stille,
+    fängt das nächste Fenster sauber an. Deshalb die längste Pause im
+    Suchbereich, nicht die nächstbeste Sprechergrenze.
+    """
+    pausen = _sprechpausen(turns)
     grenzen, pos = [0.0], 0.0
     while gesamt - pos > FENSTER:
         ziel = pos + FENSTER
-        kandidaten = [t["start"] for t in turns if pos + 60 < t["start"] < ziel + 120]
-        grenzen.append(min(kandidaten, key=lambda x: abs(x - ziel))
-                       if kandidaten else ziel)
-        pos = grenzen[-1]
+        früh, spät = pos + 60, ziel + 120
+        kandidaten = [((a + b) / 2, b - a) for a, b in pausen
+                      if früh < (a + b) / 2 < spät]
+        if kandidaten:
+            # Längste Stille gewinnt; bei gleicher Länge die näher am Ziel.
+            schnitt = max(kandidaten,
+                          key=lambda p: (p[1], -abs(p[0] - ziel)))[0]
+        else:
+            # Keine Pause im Suchbereich: dann wenigstens an einem
+            # Sprecherwechsel trennen statt blind auf der Marke.
+            wechsel = [t["start"] for t in turns if früh < t["start"] < spät]
+            schnitt = (min(wechsel, key=lambda x: abs(x - ziel))
+                       if wechsel else ziel)
+        grenzen.append(schnitt)
+        pos = schnitt
     grenzen.append(gesamt)
     return grenzen
 
@@ -294,6 +332,114 @@ HAEUFIG = {
     "Wort", "Worte", "Wörter", "Satz", "Text", "Bild", "Bilder", "Film",
     "Musik", "Essen", "Wasser", "Geld", "Euro", "Prozent", "Endeffekt",
 }
+
+def _wortfolge(text):
+    """Text auf vergleichbare Wörter herunterbrechen.
+
+    Für die Fehlerrate zählt der Wortlaut, nicht die Schreibweise:
+    Groß-/Kleinschreibung und Satzzeichen fallen weg, Zahlen bleiben.
+    """
+    text = (text or "").lower().replace("ß", "ss")
+    for a, b in (("ä", "ae"), ("ö", "oe"), ("ü", "ue")):
+        text = text.replace(a, b)
+    return re.findall(r"[a-z0-9]+", text)
+
+
+def wortfehlerrate(referenz, hypothese):
+    """Vergleicht zwei Transkripte Wort für Wort.
+
+    Die übliche Maßzahl für Spracherkennung: wie viele Ersetzungen,
+    Einfügungen und Löschungen nötig sind, um die Erkennung auf die
+    Vorlage zu bringen, geteilt durch deren Länge. Ohne diese Zahl ist
+    jede Aussage über „bessere Qualität“ eine Vermutung.
+    """
+    r, h = _wortfolge(referenz), _wortfolge(hypothese)
+    # Volle Levenshtein-Matrix mit Rückverfolgung der Operationen.
+    zeilen = [[0] * (len(h) + 1) for _ in range(len(r) + 1)]
+    for i in range(len(r) + 1):
+        zeilen[i][0] = i
+    for j in range(len(h) + 1):
+        zeilen[0][j] = j
+    for i in range(1, len(r) + 1):
+        for j in range(1, len(h) + 1):
+            zeilen[i][j] = min(zeilen[i - 1][j] + 1, zeilen[i][j - 1] + 1,
+                               zeilen[i - 1][j - 1] + (r[i - 1] != h[j - 1]))
+
+    i, j = len(r), len(h)
+    ers, ein, loe, paare = 0, 0, 0, {}
+    while i > 0 or j > 0:
+        if i > 0 and j > 0 and zeilen[i][j] == zeilen[i - 1][j - 1] + (r[i - 1] != h[j - 1]):
+            if r[i - 1] != h[j - 1]:
+                ers += 1
+                paare[(r[i - 1], h[j - 1])] = paare.get((r[i - 1], h[j - 1]), 0) + 1
+            i, j = i - 1, j - 1
+        elif j > 0 and zeilen[i][j] == zeilen[i][j - 1] + 1:
+            ein += 1
+            j -= 1
+        else:
+            loe += 1
+            i -= 1
+
+    return {"woerter": len(r), "ersetzungen": ers, "einfuegungen": ein,
+            "loeschungen": loe,
+            "rate": (ers + ein + loe) / len(r) if r else 0.0,
+            "haeufigste": sorted(paare.items(), key=lambda p: -p[1])[:15]}
+
+
+def protokoll_text(markdown):
+    """Zieht den gesprochenen Wortlaut aus einem erzeugten Markdown."""
+    zeilen, drin = [], False
+    for z in markdown.splitlines():
+        if z.startswith("## "):
+            drin = z.strip().lower() == "## protokoll"
+            continue
+        if drin and z.strip():
+            zeilen.append(re.sub(r"^\*\*.*?\*\*\s*\([^)]*\):\s*", "", z.strip()))
+    return " ".join(zeilen)
+
+
+# Halluzinationen in Stille
+# Whisper ist zu erheblichen Teilen auf Untertiteln trainiert. Bekommt es
+# ein Stück ohne Sprache, füllt es die Lücke mit dem, was in solchen
+# Dateien am Ende steht — Abspann, Kanalhinweis, Dankesformel. Das sind
+# keine Hörfehler, sondern erfundener Text, und er gehört nicht in ein
+# Protokoll.
+HALLUZINATIONEN = [
+    re.compile(m, re.I) for m in (
+        r"^untertitel(ung)?\b",
+        r"\bamara\.org\b",
+        r"\bim auftrag des zdf\b",
+        r"\bfür funk,?\s*\d{4}",
+        r"^vielen dank\.?$",
+        r"\bdanke f(ü|ue)rs? (zuschauen|zusehen|zuh(ö|oe)ren)\b",
+        r"\bbis zum n(ä|ae)chsten mal\b",
+        r"\babonniert?\b.*\bkanal\b",
+        r"\bmehr infos? (auf|unter)\b",
+        r"^copyright\b", r"^\W*$",
+    )
+]
+WIEDERHOLUNG_MAX = 4     # so oft darf dieselbe Wortfolge hintereinander stehen
+
+
+def _ist_halluzination(text):
+    """Erkennt erfundenen Untertitel-Text und festgefahrene Wiederholungen."""
+    t = (text or "").strip()
+    if not t:
+        return True
+    if any(m.search(t) for m in HALLUZINATIONEN):
+        return True
+    # Festgefahrene Dekodierung: dasselbe Wort immer wieder. Der
+    # Temperatur-Rückfall fängt das meiste ab, aber nicht alles.
+    worte = [w.lower() for w in re.findall(r"[\wÄÖÜäöüß-]+", t)]
+    if len(worte) >= WIEDERHOLUNG_MAX * 2 and len(set(worte)) <= 2:
+        return True
+    lauf, letztes, laengster = 0, None, 0
+    for w in worte:
+        lauf = lauf + 1 if w == letztes else 1
+        letztes = w
+        laengster = max(laengster, lauf)
+    return laengster > WIEDERHOLUNG_MAX
+
 
 # Nachträgliche Korrektur gegen das Glossar
 KORREKTUR_MIN_LAENGE = 4    # kürzere Begriffe haben zu viele Nachbarn

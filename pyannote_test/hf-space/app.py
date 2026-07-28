@@ -34,7 +34,7 @@ from transformers import pipeline as hf_pipeline
 from kern import (FA_ANTEIL, FA_BLOCK, FA_FENSTER, FARBEN, FENSTER,
                   GLOSSAR_DATEI, GLOSSAR_MAX, GLOSSAR_PROMPT,
                   _begriffe_zaehlen, _decode_optionen, _fenstergrenzen,
-                  _korrekturziele, _korrigieren,
+                  _ist_halluzination, _korrekturziele, _korrigieren,
                   _frontmatter, _kontext_bauen, _markdown, _namen_farben,
                   _rangfolge, _romanisieren, _sprecher_bei, _zeit,
                   _zusammenfuegen, glossar_lesen, glossar_schreiben,
@@ -216,7 +216,7 @@ def _transkribiere_gpu(audio_path, start, ende, sprache=None, kontext=""):
     for c in res.get("chunks", []):
         ts = c.get("timestamp") or (None, None)
         text = (c.get("text") or "").strip()
-        if ts[0] is None or not text:
+        if ts[0] is None or not text or _ist_halluzination(text):
             continue
         sprache_erkannt = sprache_erkannt or c.get("language")
         bis = ts[1] if ts[1] is not None else ts[0] + 30.0
@@ -225,7 +225,8 @@ def _transkribiere_gpu(audio_path, start, ende, sprache=None, kontext=""):
     if not worte:
         # Manche Modelle (etwa deutsche Feinabstimmungen) liefern keine
         # Zeitmarken. Dann den gesamten Text des Fensters selbst verorten.
-        alle = (res.get("text") or "").strip().split()
+        ganz = (res.get("text") or "").strip()
+        alle = [] if _ist_halluzination(ganz) else ganz.split()
         if alle:
             rate = len(alle) / max(ende - start, 1.0)
             treffer, _, _ = _aligniere_bereich(audio_path, alle, start, ende,
@@ -521,7 +522,14 @@ def _nach_wav(pfad):
     Transkription spürbar.
     """
     ziel = tempfile.NamedTemporaryFile(suffix=".wav", delete=False).name
-    filter_kette = "highpass=f=60,loudnorm=I=-18:LRA=11:TP=-2,dynaudnorm=f=200:g=5"
+    # Ohne dynaudnorm. Die dynamische Normalisierung zieht leise Stellen
+    # hoch — in Sprechpausen also den Rauschteppich, und auf angehobenes
+    # Rauschen antwortet Whisper mit erfundenem Text. Sie hebelt zugleich
+    # no_speech_threshold aus, das Stille an ihrem Pegel erkennt. Bleiben
+    # Hochpass gegen Trittschall und loudnorm für einen gleichmäßigen
+    # Pegel; Whisper ist auf unbearbeitetem Alltagsmaterial trainiert und
+    # braucht mehr nicht.
+    filter_kette = "highpass=f=60,loudnorm=I=-18:LRA=11:TP=-2"
     try:
         subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", pfad,
                         "-af", filter_kette, "-ar", "16000", "-ac", "1", ziel],

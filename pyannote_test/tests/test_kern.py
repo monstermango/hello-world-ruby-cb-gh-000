@@ -31,11 +31,19 @@ def test_lange_aufnahme_wird_lueckenlos_zerlegt():
     assert max(b - a for a, b in zip(grenzen, grenzen[1:])) <= kern.FENSTER + 120
 
 
-def test_schnittpunkte_liegen_auf_sprecherwechseln():
+def test_schnittpunkte_liegen_in_stille():
+    """Schärfer als die frühere Zusage.
+
+    Vorher genügte ein Sprecherwechsel. Der ist aber keine Pause, wenn der
+    nächste einsetzt, während der vorige noch spricht — dann fällt der
+    Schnitt mitten ins Wort. Verlangt wird jetzt, dass zum Schnittzeitpunkt
+    wirklich niemand redet.
+    """
     turns = [{"start": i * 20.0, "ende": i * 20.0 + 18} for i in range(120)]
     grenzen = kern._fenstergrenzen(turns, 2400.0)
-    starts = {t["start"] for t in turns}
-    assert all(g in starts for g in grenzen[1:-1])
+    for g in grenzen[1:-1]:
+        spricht = [t for t in turns if t["start"] < g < t["ende"]]
+        assert not spricht, f"Schnitt bei {g} fällt mitten in einen Beitrag"
 
 
 # ---------- Sprecherzuordnung ----------
@@ -74,6 +82,134 @@ def test_ohne_erkannten_text_bleibt_die_sprecherstruktur():
                                  [], [], 9.0)
     assert len(daten["segmente"]) == 2
     assert all(s["text"] is None for s in daten["segmente"])
+
+
+# ---------- Messung ----------
+
+def test_gleicher_text_hat_keine_fehler():
+    e = kern.wortfehlerrate("Guten Tag, wie geht es Ihnen?",
+                            "guten tag wie geht es ihnen")
+    assert e["rate"] == 0.0, "Satzzeichen und Groß/Klein dürfen nicht zählen"
+
+
+def test_umlaute_werden_vereinheitlicht():
+    assert kern.wortfehlerrate("Gespräch über Größe",
+                               "Gespraech ueber Groesse")["rate"] == 0.0
+
+
+def test_die_drei_fehlerarten_werden_getrennt():
+    e = kern.wortfehlerrate("a b c d", "a x c d e")
+    assert e["ersetzungen"] == 1 and e["einfuegungen"] == 1
+    assert e["loeschungen"] == 0
+    assert e["rate"] == 0.5, "zwei Fehler auf vier Wörter"
+
+
+def test_fehlende_woerter_zaehlen():
+    e = kern.wortfehlerrate("a b c d", "a d")
+    assert e["loeschungen"] == 2 and e["rate"] == 0.5
+
+
+def test_verwechslungen_werden_benannt():
+    e = kern.wortfehlerrate("die martha kam", "die marta kam")
+    assert ("martha", "marta") in dict(e["haeufigste"])
+
+
+def test_leere_vorlage_bricht_nicht():
+    assert kern.wortfehlerrate("", "irgendwas")["rate"] == 0.0
+
+
+def test_protokolltext_loest_das_markdown_auf():
+    md = ("---\ntitel: x\n---\n\n# Aufnahme\n\n## Redeanteile\n\n"
+          "| Sprecher | Anteil |\n|---|---|\n| Sprecher 1 | 58 % |\n\n"
+          "## Protokoll\n\n"
+          "**Sprecher 1** (0:00–0:02): Guten Tag\n\n"
+          "**Sprecher 2** (0:06–0:07): Hallo zusammen\n\n"
+          "## Segmente\n\n| Start | Ende |\n|---|---|\n| 0:00 | 0:02 |\n")
+    text = kern.protokoll_text(md)
+    assert text == "Guten Tag Hallo zusammen", text
+    # Entscheidend: nichts aus Kopfdaten oder Tabellen darf mitkommen,
+    # sonst misst man die Vorlage gegen Tabellenzeilen.
+    for fremd in ("Sprecher 1", "58", "titel", "0:00"):
+        assert fremd not in text, f"{fremd!r} gehört nicht in den Wortlaut"
+
+
+# ---------- Fensterschnitte ----------
+
+def _turn(a, b, label="A"):
+    return {"start": a, "ende": b, "label": label}
+
+
+def test_pausen_beruecksichtigen_ueberlappung():
+    # Ein Sprecherwechsel ist keine Pause, wenn der nächste einsetzt,
+    # während der vorige noch redet.
+    turns = [_turn(0, 10, "A"), _turn(8, 20, "B")]
+    assert kern._sprechpausen(turns) == []
+
+
+def test_echte_luecke_wird_gefunden():
+    turns = [_turn(0, 10, "A"), _turn(15, 20, "B")]
+    assert kern._sprechpausen(turns) == [(10, 15)]
+
+
+def test_schnitt_landet_in_der_laengsten_stille():
+    gesamt = kern.FENSTER * 2
+    ziel = kern.FENSTER
+    turns = [_turn(0, ziel - 40),
+             _turn(ziel - 39, ziel - 20),      # 1 s Lücke davor
+             _turn(ziel + 10, gesamt)]         # 30 s Lücke davor
+    grenzen = kern._fenstergrenzen(turns, gesamt)
+    mitte = (ziel - 20 + ziel + 10) / 2
+    assert abs(grenzen[1] - mitte) < 0.01, \
+        f"Schnitt nicht in der grossen Stille: {grenzen[1]}"
+
+
+def test_ohne_pause_wird_am_sprecherwechsel_getrennt():
+    gesamt = kern.FENSTER * 2
+    # Durchgehend belegt, aber mit einem Wechsel nahe der Zielmarke.
+    turns = [_turn(0, kern.FENSTER + 5, "A"),
+             _turn(kern.FENSTER + 3, gesamt, "B")]
+    grenzen = kern._fenstergrenzen(turns, gesamt)
+    assert grenzen[1] == kern.FENSTER + 3
+
+
+def test_kurze_aufnahme_bleibt_ein_stueck():
+    assert kern._fenstergrenzen([], 60.0) == [0.0, 60.0]
+
+
+def test_grenzen_sind_aufsteigend_und_vollstaendig():
+    gesamt = kern.FENSTER * 3.5
+    turns = [_turn(i * 20.0, i * 20.0 + 15.0) for i in range(int(gesamt / 20))]
+    g = kern._fenstergrenzen(turns, gesamt)
+    assert g[0] == 0.0 and g[-1] == gesamt
+    assert all(b > a for a, b in zip(g, g[1:])), f"nicht aufsteigend: {g}"
+
+
+# ---------- Halluzinationen ----------
+
+def test_untertitel_abspann_wird_verworfen():
+    for erfunden in ("Untertitel der Amara.org-Community",
+                     "Untertitelung im Auftrag des ZDF für funk, 2017",
+                     "Vielen Dank.",
+                     "Danke fürs Zuschauen!",
+                     "Abonniert den Kanal für mehr Videos"):
+        assert kern._ist_halluzination(erfunden), erfunden
+
+
+def test_festgefahrene_wiederholung_wird_verworfen():
+    assert kern._ist_halluzination("ja ja ja ja ja ja ja ja")
+
+
+def test_echter_satz_bleibt():
+    for echt in ("Vielen Dank für das Gespräch, das war sehr aufschlussreich.",
+                 "Ja, genau, das sehe ich auch so.",
+                 "Hedi sucht momentan stärker den Kontakt zu den Erwachsenen."):
+        assert not kern._ist_halluzination(echt), echt
+
+
+def test_wiederholung_in_normaler_rede_bleibt():
+    # Doppelungen sind in gesprochener Sprache normal und dürfen nicht
+    # als Halluzination durchgehen.
+    assert not kern._ist_halluzination("Das ist ist wirklich sehr sehr gut")
 
 
 # ---------- Glossar-Korrektur ----------
