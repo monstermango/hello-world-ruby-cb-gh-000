@@ -27,18 +27,33 @@
 <main>
   <!-- Analyse -->
   <section id="view-analyse" class="view">
-    <div id="rec-area" class="card center">
-      <button id="btn-record" class="rec-btn" aria-label="Aufnahme starten">
-        <svg viewBox="0 0 24 24" width="34" height="34" fill="currentColor" aria-hidden="true">
-          <path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z"/>
-          <path d="M19 11a7 7 0 0 1-14 0H3a9 9 0 0 0 8 8.94V22h2v-2.06A9 9 0 0 0 21 11h-2Z"/>
-        </svg>
-      </button>
-      <div id="rec-status" class="dim">Zum Aufnehmen tippen</div>
-      <button id="btn-datei" class="ghost">Audiodatei wählen</button>
-      <div class="dim klein">z. B. eine Sprachmemo aus „Dateien“ oder iCloud</div>
+    <div id="rec-area" class="card">
+      <button id="btn-datei" class="primary">Aufnahme auswählen</button>
+      <div class="dim klein mitte">Sprachmemo aus „Dateien“ oder iCloud</div>
+      <div class="trenner"><span>oder</span></div>
+      <div class="row">
+        <button id="btn-record" class="rec-btn" aria-label="Hier aufnehmen">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true">
+            <path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z"/>
+            <path d="M19 11a7 7 0 0 1-14 0H3a9 9 0 0 0 8 8.94V22h2v-2.06A9 9 0 0 0 21 11h-2Z"/>
+          </svg>
+        </button>
+        <span id="rec-status" class="dim grow">Hier aufnehmen</span>
+      </div>
       <!-- Kein enger Filter: iOS blendet sonst m4a-Dateien aus iCloud aus. -->
       <input type="file" id="file-input" hidden>
+    </div>
+
+    <div id="anleitung" class="card">
+      <ol class="schritte">
+        <li><b>Meeting aufnehmen</b><span class="dim klein">
+          mit Sprachmemos auf dem iPhone</span></li>
+        <li><b>Hier auswählen</b><span class="dim klein">
+          Datei wählen und das Transkript aus Sprachmemos einfügen —
+          das liefert den besten Text</span></li>
+        <li><b>Als Markdown sichern</b><span class="dim klein">
+          Sprecher benennen, herunterladen oder teilen</span></li>
+      </ol>
     </div>
 
     <div id="audio-panel" class="card" hidden>
@@ -47,12 +62,13 @@
         <button id="btn-verwerfen" class="icon-btn" title="Verwerfen">✕</button>
       </div>
       <audio id="audio-preview" controls></audio>
-      <details id="transkript-box">
-        <summary>Eigenes Transkript einfügen (optional)</summary>
-        <p class="dim klein">Für beste Qualität: In Sprachmemos die Aufnahme
-          öffnen, das Transkript anzeigen, kopieren und hier einfügen. Der Text
-          wird dann nur noch den Sprechern zugeordnet — genauer und schneller
-          als eigene Erkennung.</p>
+      <details id="transkript-box" open>
+        <summary><b>Transkript aus Sprachmemos einfügen</b> — empfohlen</summary>
+        <p class="dim klein">In Sprachmemos die Aufnahme öffnen, Transkript
+          anzeigen, kopieren, hier einfügen. Der Text wird dann wortgetreu
+          übernommen und nur noch den Sprechern zugeordnet — deutlich
+          genauer und schneller als eigene Erkennung. Leer lassen, wenn die
+          App selbst erkennen soll.</p>
         <textarea id="transkript" rows="4"
                   placeholder="Transkript hier einfügen …"></textarea>
         <div id="transkript-info" class="dim klein"></div>

@@ -168,6 +168,7 @@ function setzeAudio(datei) {
                              : mb.toFixed(1) + " MB"})`;
   $("#audio-preview").src = URL.createObjectURL(datei);
   $("#audio-panel").hidden = false;
+  $("#anleitung").hidden = true;
   $("#ergebnis").innerHTML = "";
   letzteAnalyse = null;
 }
@@ -185,6 +186,8 @@ $("#file-input").addEventListener("change", (e) => {
 $("#btn-verwerfen").addEventListener("click", () => {
   audioDatei = null;
   $("#audio-panel").hidden = true;
+  $("#anleitung").hidden = false;
+  $("#ergebnis").innerHTML = "";
 });
 
 $("#btn-record").addEventListener("click", async () => {
@@ -208,7 +211,7 @@ $("#btn-record").addEventListener("click", async () => {
       clearInterval(recTimer);
       wakeLockFreigeben();
       $("#btn-record").classList.remove("aktiv");
-      $("#rec-status").textContent = "Zum Aufnehmen tippen";
+      $("#rec-status").textContent = "Hier aufnehmen";
       const endung = mime === "audio/mp4" ? "m4a" : "webm";
       setzeAudio(new File(recChunks, `aufnahme.${endung}`, { type: mime }));
     };
@@ -308,6 +311,10 @@ async function analyseRahmen(arbeit) {
     laufLoeschen();
     letzteAnalyse = d;
     ergebnisAnzeigen(d, false);
+    // Ergebnis in den Blick holen — sonst steht es unter der Eingabe.
+    // Etwas Vorlauf, damit die Kopfzeile nicht unter der Titelleiste liegt.
+    window.scrollTo({ top: Math.max(0, $("#ergebnis").offsetTop - 88),
+                      behavior: "smooth" });
   } catch (e) {
     let hinweis = "";
     if (/ZeroGPU|quota|runs limit/i.test(e.message) && tokenAktiv === false) {
@@ -447,10 +454,11 @@ function ergebnisAnzeigen(d, gespeichert) {
 
   let abschluss;
   if (gespeichert) {
+    // Herunterladen ist das Ziel des Ablaufs und daher die Hauptaktion.
     abschluss =
-      `<div class="row md-aktionen">` +
-      `<button id="btn-md-teilen" class="ghost grow">Teilen</button>` +
-      `<button id="btn-md-laden" class="ghost grow">Herunterladen</button>` +
+      `<div class="md-aktionen">` +
+      `<button id="btn-md-laden" class="primary">Markdown herunterladen</button>` +
+      `<button id="btn-md-teilen" class="ghost breit">Teilen …</button>` +
       `</div>`;
   } else {
     const bekannte = d.sprecher_bekannt || [];
@@ -476,10 +484,12 @@ function ergebnisAnzeigen(d, gespeichert) {
       `<button id="btn-speichern" class="primary">Als Markdown speichern</button>`;
   }
 
+  // Sichern und Herunterladen stehen bewusst oben: nach einem langen
+  // Meeting soll man dafür nicht durch das ganze Protokoll scrollen.
   $("#ergebnis").innerHTML =
     `<div class="card">${meta}<div class="sa-bar">${balken}</div>` +
-    `<div class="sa-legs">${legende}</div>${zeitleiste}${gespraech}${hinweis}` +
-    `${abschluss}</div>`;
+    `<div class="sa-legs">${legende}</div>${abschluss}` +
+    `${zeitleiste}${gespraech}${hinweis}</div>`;
 
   if (gespeichert) {
     $("#btn-md-laden").addEventListener("click", () => mdHerunterladen());

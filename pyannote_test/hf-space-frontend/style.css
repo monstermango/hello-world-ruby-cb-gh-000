@@ -67,11 +67,22 @@ button { font: inherit; border: 0; cursor: pointer; color: inherit; background: 
   background: var(--blase); color: var(--dim); white-space: nowrap }
 .status.warn { background: var(--warn-bg); color: var(--text) }
 
+.mitte { text-align: center }
+.trenner { display: flex; align-items: center; gap: 12px;
+  margin: 16px 0; color: var(--dim); font-size: .85rem }
+.trenner::before, .trenner::after {
+  content: ""; flex: 1; height: 1px; background: var(--linie) }
+
+.schritte { margin: 0; padding-left: 26px }
+.schritte li { margin: 10px 0 }
+.schritte li b { display: block }
+.schritte li span { display: block; margin-top: 1px }
+
 .rec-btn {
-  width: 84px; height: 84px; border-radius: 50%;
+  width: 48px; height: 48px; flex: 0 0 48px; border-radius: 50%;
   background: var(--primary); color: #fff;
   display: flex; align-items: center; justify-content: center;
-  box-shadow: 0 4px 14px rgba(91, 91, 214, .4);
+  box-shadow: 0 2px 8px rgba(91, 91, 214, .35);
   transition: transform .15s;
 }
 .rec-btn:active { transform: scale(.94) }
@@ -83,7 +94,9 @@ button { font: inherit; border: 0; cursor: pointer; color: inherit; background: 
 
 audio { width: 100%; margin: 10px 0 }
 details { margin: 8px 0 }
-summary { min-height: 44px; display: flex; align-items: center; color: var(--dim) }
+/* Kein Flex: sonst werden Auszeichnungen im Text zu eigenen Spalten */
+summary { min-height: 44px; padding: 11px 0; color: var(--dim) }
+summary b { color: var(--text) }
 .opt input {
   width: 76px; min-height: 44px; text-align: center; font: inherit;
   border: 1px solid var(--linie); border-radius: 10px;
@@ -152,6 +165,7 @@ summary { min-height: 44px; display: flex; align-items: center; color: var(--dim
 .sa-warn { margin-top: 14px; padding: 10px 14px; border-radius: 10px;
   background: var(--warn-bg); font-size: .9rem }
 .md-aktionen { margin-top: 16px }
+.breit { display: block; width: 100%; margin-top: 8px; text-align: center }
 .namen-zeile { margin: 10px 0 }
 .punkt { width: 14px; height: 14px; border-radius: 50%; flex: 0 0 14px }
 .namen-feld { flex: 1; min-height: 44px; padding: 0 12px; font-size: 16px;
