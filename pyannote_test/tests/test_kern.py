@@ -76,6 +76,54 @@ def test_ohne_erkannten_text_bleibt_die_sprecherstruktur():
     assert all(s["text"] is None for s in daten["segmente"])
 
 
+# ---------- Dekodierung ----------
+
+def test_vorlaufkontext_kommt_nie_ohne_temperaturleiter():
+    """Die Kopplung, an der die Qualität hing.
+
+    Die Bibliothek löst den Vorlauf-Kontext erst oberhalb von Temperatur
+    0.5. Ohne Rückfall bleibt sie bei None, der Kontext also dauerhaft an —
+    und eine begonnene Wiederholung schreibt sich fort. Wer das eine setzt,
+    muss das andere mitsetzen.
+    """
+    gk = kern._decode_optionen("german")
+    if gk.get("condition_on_prev_tokens"):
+        temps = gk.get("temperature")
+        assert isinstance(temps, (list, tuple)) and len(temps) > 1, \
+            "Vorlauf-Kontext ohne Temperaturleiter ist die gefährliche Variante"
+        assert max(temps) > 0.5, \
+            "die Leiter muss über 0.5 reichen, sonst greift die Notbremse nie"
+
+
+def test_rueckfall_schwellen_sind_gesetzt():
+    gk = kern._decode_optionen("german")
+    # Ohne diese beiden merkt die Bibliothek gar nicht, dass sie
+    # zurückfallen müsste — die Temperaturliste allein tut nichts.
+    assert gk["compression_ratio_threshold"] == kern.KOMPRESSION_MAX
+    assert gk["logprob_threshold"] == kern.LOGPROB_MIN
+
+
+def test_temperaturleiter_beginnt_bei_null():
+    # Der erste Versuch muss der beste sein: Temperatur 0 mit Strahlsuche.
+    # Steigt sie sofort ein, wird auch sauberes Audio gewürfelt.
+    assert kern._decode_optionen()["temperature"][0] == 0.0
+    assert kern._decode_optionen()["num_beams"] > 1
+
+
+def test_sprache_wird_nur_gesetzt_wenn_bekannt():
+    # Eine leere Sprachangabe darf nicht als Sprache durchgehen, sonst
+    # rät Whisper nicht mehr, sondern bekommt Unsinn vorgesetzt.
+    assert "language" not in kern._decode_optionen()
+    assert "language" not in kern._decode_optionen("")
+    assert kern._decode_optionen("german")["language"] == "german"
+
+
+def test_uebersetzung_bleibt_ausgeschaltet():
+    # Das war ein echter Fehler: Whisper kippte mitten im Gespräch
+    # ins Englische.
+    assert kern._decode_optionen("german")["task"] == "transcribe"
+
+
 # ---------- Gleichzeitiges Sprechen ----------
 
 def _ue(start, ende, wer=("A", "B")):

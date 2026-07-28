@@ -15,6 +15,44 @@ FA_FENSTER = 240.0       # Audio je Alignment-Durchgang
 FA_BLOCK = 900.0         # Audio je HTTP-Anfrage beim Einpassen
 FA_ANTEIL = 0.6          # bewusst weniger Text anbieten, als das Fenster fasst
 
+# Dekodierung
+# Die Temperaturleiter ist Whispers Sicherheitsnetz: erkennt die Bibliothek
+# an Kompressionsrate oder Wahrscheinlichkeit, dass ein Abschnitt entgleist
+# ist, verwirft sie ihn und würfelt ihn mit mehr Zufall neu. Die Schwellen
+# sind die aus der Referenzimplementierung.
+TEMPERATUREN = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
+KOMPRESSION_MAX = 1.35    # darüber wiederholt sich der Abschnitt
+LOGPROB_MIN = -1.0        # darunter ist das Modell zu unsicher
+STILLE_SCHWELLE = 0.6     # darüber gilt der Abschnitt als Stille
+STRAHLEN = 2              # Strahlsuche, solange die Temperatur 0 ist
+
+
+def _decode_optionen(sprache=None):
+    """Baut die Dekodier-Vorgaben für Whisper.
+
+    Ohne Temperaturleiter hat `condition_on_prev_tokens` kein Gegengewicht:
+    die Bibliothek löst den Vorlauf-Kontext erst oberhalb von Temperatur
+    0.5, und dorthin gelangt sie nur über den Rückfall. Fehlt er, kann sich
+    eine einmal begonnene Wiederholung über den Rest der Aufnahme
+    fortschreiben. Beides gehört deshalb zusammen gesetzt — oder gar nicht.
+
+    Die Strahlsuche gilt nur bei Temperatur 0; sobald gewürfelt wird,
+    schaltet die Bibliothek selbst auf einen Strahl zurück.
+    """
+    gk = {
+        "task": "transcribe",
+        "num_beams": STRAHLEN,
+        "condition_on_prev_tokens": True,
+        "temperature": TEMPERATUREN,
+        "compression_ratio_threshold": KOMPRESSION_MAX,
+        "logprob_threshold": LOGPROB_MIN,
+        "no_speech_threshold": STILLE_SCHWELLE,
+    }
+    if sprache:
+        gk["language"] = sprache
+    return gk
+
+
 # Gleichzeitiges Sprechen
 UEBERLAPP_MIN = 1.0       # kürzeres ist normales Dazwischenreden
 UEBERLAPP_LUECKE = 5.0    # dichter beieinander gehört zu einer Passage

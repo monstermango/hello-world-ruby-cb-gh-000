@@ -33,8 +33,8 @@ from transformers import pipeline as hf_pipeline
 
 from kern import (FA_ANTEIL, FA_BLOCK, FA_FENSTER, FARBEN, FENSTER,
                   GLOSSAR_DATEI, GLOSSAR_MAX, GLOSSAR_PROMPT,
-                  _begriffe_zaehlen, _fenstergrenzen, _frontmatter,
-                  _kontext_bauen, _markdown, _namen_farben,
+                  _begriffe_zaehlen, _decode_optionen, _fenstergrenzen,
+                  _frontmatter, _kontext_bauen, _markdown, _namen_farben,
                   _rangfolge, _romanisieren, _sprecher_bei, _zeit,
                   _zusammenfuegen, glossar_lesen, glossar_schreiben,
                   pfad_erlaubt)
@@ -183,7 +183,11 @@ def _worte_einpassen(audio_path, text, a, b, gesamt):
 
 
 def _asr_dauer(audio_path, start, ende, sprache=None, kontext=""):
-    return int(min(120, max(40, 25 + (ende - start) / 3)))
+    # Grosszuegiger als die reine Rechenzeit: der Temperatur-Rückfall
+    # verwirft entgleiste Abschnitte und dekodiert sie erneut, im
+    # schlimmsten Fall fünfmal. Das Budget ist eine Reservierung, keine
+    # Abrechnung — zu knapp bemessen bricht der Lauf mittendrin ab.
+    return int(min(120, max(60, 40 + (ende - start) / 2)))
 
 
 @spaces.GPU(duration=_asr_dauer)
@@ -197,13 +201,9 @@ def _transkribiere_gpu(audio_path, start, ende, sprache=None, kontext=""):
     modell = _asr_holen(sprache)
     wellenform, sr = loader.crop(audio_path, Segment(start, ende), mode="pad")
     eingabe = {"array": wellenform.squeeze(0).numpy(), "sampling_rate": sr}
-    # Strahlsuche statt gieriger Dekodierung und Kontext aus dem Vorlauf:
-    # beides hebt die Trefferquote bei schwierigen Aufnahmen deutlich.
     # Bewusst ohne prompt_ids — ein Vorwissen-Prompt bringt die
     # Langform-Dekodierung zum Verstummen.
-    gk = {"task": "transcribe", "num_beams": 2, "condition_on_prev_tokens": True}
-    if sprache:
-        gk["language"] = sprache
+    gk = _decode_optionen(sprache)
     try:
         res = modell(eingabe, return_timestamps=True, generate_kwargs=gk,
                      return_language=not sprache)
