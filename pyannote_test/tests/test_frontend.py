@@ -29,7 +29,12 @@ export class Client {
     if (key !== "test-key") return {data: [{ok: false, fehler: "Ungültiger Zugangsschlüssel."}]};
     if (ep === "/glossar") return {data: [{ok: true, begriffe: ["Kita"], sprecher: ["Nils"], zaehler: {Kita: 7}}]};
     if (ep === "/glossar_speichern") { window._glossar = daten; return {data: [{ok: true, begriffe: (daten[1]||"").split(/\\s*\\n\\s*/).filter(Boolean), sprecher: (daten[2]||"").split(/\\s*\\n\\s*/).filter(Boolean)}]}; }
-    if (ep === "/status") return {data: [{ok: true, token: true}]};
+    // Bewusst langsam: nur so faellt auf, wenn der Aufrufer die Antwort
+    // nicht abwartet und den Token-Status zu frueh abliest.
+    if (ep === "/status") {
+      await new Promise((f) => setTimeout(f, 400));
+      return {data: [{ok: true, token: true}]};
+    }
     if (ep === "/verlauf") return {data: [{ok: true, eintraege: [
       {pfad: "aufnahmen/a.md", titel: "Aufnahme 2026-07-25 07:04", datum: "2026-07-25T07:04:53+02:00", sprecher: 2, dauer_s: 23.4},
       {pfad: "aufnahmen/b.md", titel: "Aufnahme 2026-07-25 06:30", datum: "2026-07-25T06:30:27+02:00", sprecher: 3, dauer_s: 107}
@@ -125,6 +130,15 @@ async def main():
         await page.click("#btn-login")
         await page.wait_for_timeout(800)
         assert not await page.locator("#login").is_visible(), "Overlay bleibt"
+
+        # 3a. Die Rückmeldung muss den Token-Status kennen, nicht raten.
+        #     Ohne await auf die Statusabfrage stand hier die Falschmeldung
+        #     "ohne gültiges HF-Token", obwohl das Token einwandfrei war.
+        meldung = await page.locator("#toast").inner_text()
+        assert "aktiv" in meldung, f"Token-Rückmeldung falsch: {meldung!r}"
+        abzeichen = await page.locator("#token-status").inner_text()
+        assert abzeichen == "Konto-Kontingent", \
+            f"Abzeichen falsch: {abzeichen!r}"
 
         # 3b. Einstellungen lassen sich öffnen und wieder schließen
         await page.locator("#btn-key").dispatch_event("click")

@@ -84,13 +84,26 @@ async function loginPruefen(neuerKey) {
   $("#login").hidden = true;
   einstellungenSchliessbar();
   verlaufAnzeigen(antwort.eintraege);
-  tokenStatusPruefen();
+  // Muss abgewartet werden: der Aufrufer meldet dem Nutzer gleich, ob das
+  // Token greift. Ohne await läse er den Anfangswert und behauptete auch
+  // bei einwandfreiem Token, es fehle eines.
+  await tokenStatusPruefen();
   fortsetzenAnbieten();
 }
 
 // Fragt das Backend, ob die Anfragen mit HF-Token ankommen. Ohne Token läuft
 // alles auf dem sehr kleinen anonymen GPU-Kontingent.
 let tokenAktiv = null;
+
+// Ein nicht eingetragenes Token ist etwas anderes als ein abgelehntes —
+// im ersten Fall fehlt eine Eingabe, im zweiten stimmt der Wert nicht.
+function tokenMeldung() {
+  if (tokenAktiv) return "HF-Token aktiv — GPU läuft über dein Konto.";
+  if (tokenAktiv === null) return "Verbindung zum Backend gestört.";
+  if (!hfToken) return "Kein HF-Token hinterlegt — nur kleines anonymes "
+    + "GPU-Kontingent.";
+  return "HF-Token wurde nicht erkannt — bitte prüfen.";
+}
 
 async function tokenStatusPruefen() {
   const feld = $("#token-status");
@@ -101,11 +114,10 @@ async function tokenStatusPruefen() {
     tokenAktiv = null;
   }
   feld.hidden = tokenAktiv === null;
-  feld.textContent = tokenAktiv ? "Konto-Kontingent" : "ohne Token";
+  feld.textContent = tokenAktiv ? "Konto-Kontingent"
+    : hfToken ? "Token abgelehnt" : "ohne Token";
   feld.classList.toggle("warn", tokenAktiv === false);
-  $("#login-status").textContent = tokenAktiv
-    ? "HF-Token aktiv — GPU läuft über dein Konto."
-    : "Kein HF-Token aktiv — nur kleines anonymes GPU-Kontingent.";
+  $("#login-status").textContent = tokenMeldung();
 }
 
 $("#btn-login").addEventListener("click", async () => {
@@ -125,8 +137,7 @@ $("#btn-login").addEventListener("click", async () => {
   $("#btn-login").disabled = true;
   try {
     await loginPruefen(wert);
-    toast(tokenAktiv ? "Token aktiv — GPU läuft über dein Konto."
-                     : "Angemeldet, aber ohne gültiges HF-Token.");
+    toast(tokenMeldung());
   } catch (e) {
     $("#login-fehler").textContent = e.message;
   } finally {
