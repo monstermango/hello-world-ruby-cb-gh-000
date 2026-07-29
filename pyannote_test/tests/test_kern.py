@@ -269,6 +269,76 @@ def test_bestaetigte_korrektur_schlaegt_die_aehnlichkeit():
     assert "Martha" in neu[0]["text"]
 
 
+# ---------- GPU-Konto ----------
+
+def test_erste_buchung_oeffnet_das_fenster():
+    k = kern.kontingent_buchen({}, 30.0, 1000.0)
+    assert k["beginn"] == 1000.0 and k["verbraucht"] == 30.0
+
+
+def test_buchungen_summieren_sich_im_fenster():
+    k = kern.kontingent_buchen({}, 30.0, 1000.0)
+    k = kern.kontingent_buchen(k, 45.0, 5000.0)
+    assert k["verbraucht"] == 75.0 and k["beginn"] == 1000.0
+
+
+def test_fenster_laeuft_ab_erster_nutzung_nicht_ab_mitternacht():
+    """Die Eigenart, an der eine naive Tageslogik scheitern würde.
+
+    Wer um 14 Uhr anfängt, hat am nächsten Tag um 14 Uhr wieder das volle
+    Budget — nicht um 0 Uhr.
+    """
+    k = kern.kontingent_buchen({}, 100.0, 1000.0)
+    knapp = kern.kontingent_buchen(k, 10.0, 1000.0 + 24 * 3600 - 1)
+    assert knapp["verbraucht"] == 110.0, "kurz davor zählt noch mit"
+    danach = kern.kontingent_buchen(k, 10.0, 1000.0 + 24 * 3600)
+    assert danach["verbraucht"] == 10.0, "danach beginnt ein neues Fenster"
+    assert danach["beginn"] == 1000.0 + 24 * 3600
+
+
+def test_stand_rechnet_prozent_und_rest():
+    k = {"beginn": 1000.0, "verbraucht": 600.0}
+    s = kern.kontingent_stand(k, 2000.0, budget=2400.0)
+    assert s["rest_s"] == 1800.0 and s["prozent"] == 75.0
+
+
+def test_abgelaufenes_fenster_gilt_wieder_als_voll():
+    k = {"beginn": 1000.0, "verbraucht": 2400.0}
+    s = kern.kontingent_stand(k, 1000.0 + 24 * 3600 + 1, budget=2400.0)
+    assert s["prozent"] == 100.0 and s["verbraucht_s"] == 0.0
+
+
+def test_verbrauch_ueber_budget_bleibt_bei_null_prozent():
+    k = {"beginn": 1000.0, "verbraucht": 9999.0}
+    s = kern.kontingent_stand(k, 2000.0, budget=2400.0)
+    assert s["prozent"] == 0.0 and s["rest_s"] == 0.0
+
+
+def test_ohne_nutzung_ist_alles_da():
+    s = kern.kontingent_stand({}, 1000.0, budget=2400.0)
+    assert s["prozent"] == 100.0 and s["zuruecksetzung_in_s"] is None
+
+
+def test_eigene_zaehlung_ist_als_schaetzung_gekennzeichnet():
+    s = kern.kontingent_stand({"beginn": 1.0, "verbraucht": 10.0}, 2.0)
+    assert s["geschaetzt"] is True
+
+
+def test_amtliche_meldung_schlaegt_die_eigene_zaehlung():
+    # Die Fehlermeldung kennt auch, was andere Spaces verbraucht haben.
+    k = kern.kontingent_buchen({}, 100.0, 1000.0)
+    k = kern.kontingent_korrigieren(k, rest_s=30.0, jetzt=1200.0,
+                                    budget=2400.0)
+    s = kern.kontingent_stand(k, 1300.0, budget=2400.0)
+    assert s["rest_s"] == 30.0
+    assert s["geschaetzt"] is False, "ab jetzt bestätigt"
+
+
+def test_negative_zeit_wird_nicht_gutgeschrieben():
+    k = kern.kontingent_buchen({"beginn": 1.0, "verbraucht": 50.0}, -20.0, 2.0)
+    assert k["verbraucht"] == 50.0
+
+
 # ---------- Tempo ----------
 
 def test_tempo_rechnet_die_drei_zahlen():

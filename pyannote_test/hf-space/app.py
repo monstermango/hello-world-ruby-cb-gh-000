@@ -43,6 +43,8 @@ from kern import (FA_ANTEIL, FA_BLOCK, FA_FENSTER, FARBEN, FENSTER,
                   _rangfolge, _romanisieren, _sprecher_bei, _zeit,
                   _zusammenfuegen, glossar_lesen, glossar_schreiben,
                   restzeit, tempo, _woerter_zaehlen,
+                  KONTINGENT_S, kontingent_buchen,
+                  kontingent_korrigieren, kontingent_stand,
                   pfad_erlaubt)
 
 HF_TOKEN = os.environ["HF_TOKEN"]
@@ -126,6 +128,70 @@ def _pruefe(key):
 # Datei, sonst wären die Sprecher zwischen den Fenstern nicht dieselben.
 
 
+KONTO_DATEI = "gpu_konto.json"
+GPU_BUDGET = float(os.environ.get("GPU_BUDGET_S") or KONTINGENT_S)
+_konto = {"daten": None, "schmutzig": False}
+
+
+def _konto_laden():
+    if _konto["daten"] is None:
+        daten = {}
+        try:
+            pfad = hf_hub_download(DATEN_REPO, KONTO_DATEI, repo_type="dataset",
+                                   token=HF_TOKEN, force_download=True)
+            with open(pfad, encoding="utf-8") as fh:
+                daten = json.load(fh)
+        except Exception:
+            pass
+        _konto["daten"] = daten
+    return _konto["daten"]
+
+
+def _konto_sichern():
+    if not _konto["schmutzig"]:
+        return
+    try:
+        api.upload_file(
+            path_or_fileobj=json.dumps(_konto["daten"]).encode("utf-8"),
+            path_in_repo=KONTO_DATEI, repo_id=DATEN_REPO, repo_type="dataset",
+            commit_message="GPU-Konto aktualisiert")
+        _konto["schmutzig"] = False
+    except Exception:
+        traceback.print_exc()
+
+
+# Obergrenze je Aufruf. Die Wartezeit in der Schlange kostet kein
+# Kontingent, ist von aussen aber nicht von der Rechenzeit zu trennen —
+# und weiter als bis zur Reservierung kann ein Aufruf nie laufen, weil er
+# dort abgebrochen wird. Also deckeln statt masslos überschätzen.
+GPU_DECKEL_S = 200.0
+
+
+def bucht_gpu(fn):
+    """Zählt die Zeit über einem GPU-Aufruf.
+
+    Muss OBERHALB von @spaces.GPU stehen. Darunter liefe die Zählung im
+    Kindprozess, den der Dekorator intern aufspannt — die Buchung wäre mit
+    dessen Ende verloren. Genau so war es zuerst gebaut, und das Konto
+    blieb nach einem echten Lauf auf null stehen.
+
+    Gezählt wird damit Wartezeit mit. Deshalb der Deckel, deshalb die
+    Kennzeichnung als Schätzung, und deshalb schlägt eine echte
+    Kontingent-Meldung diese Rechnung jederzeit.
+    """
+    def huelle(*a, **kw):
+        t0 = time.time()
+        try:
+            return fn(*a, **kw)
+        finally:
+            gebraucht = min(time.time() - t0, GPU_DECKEL_S)
+            _konto["daten"] = kontingent_buchen(_konto_laden(), gebraucht,
+                                                time.time())
+            _konto["schmutzig"] = True
+    huelle.__name__ = fn.__name__
+    return huelle
+
+
 def _diar_dauer(audio_path, num_speakers):
     try:
         laenge = loader.get_duration(audio_path)
@@ -134,6 +200,7 @@ def _diar_dauer(audio_path, num_speakers):
     return int(min(120, max(30, 20 + laenge / 40)))
 
 
+@bucht_gpu
 @spaces.GPU(duration=_diar_dauer)
 def _diarize_gpu(audio_path, num_speakers):
     kwargs = {}
@@ -174,6 +241,7 @@ def _diarize_gpu(audio_path, num_speakers):
     return turns, stats, overlaps, abdruecke
 
 
+@bucht_gpu
 @spaces.GPU(duration=30)
 def _sprache_gpu(audio_path, ab):
     """Erkennt die Sprache einmalig anhand von 30 s ab der ersten Sprechstelle."""
@@ -272,6 +340,7 @@ def _asr_dauer(audio_path, start, ende, sprache=None, kontext=""):
     return int(min(200, max(60, 40 + (ende - start) / 2)))
 
 
+@bucht_gpu
 @spaces.GPU(duration=_asr_dauer)
 def _transkribiere_gpu(audio_path, start, ende, sprache=None, kontext=""):
     """Transkribiert ein Fenster am Stück — voller Kontext, beste Qualität.
@@ -400,6 +469,7 @@ def _fa_dauer(audio_path, worte, start, block_ende, rate, gesamt):
     return int(min(200, max(30, 20 + (block_ende - start) / 10)))
 
 
+@bucht_gpu
 @spaces.GPU(duration=_fa_dauer)
 def _align_gpu(audio_path, worte, start, block_ende, rate, gesamt):
     """Passt Wörter fortlaufend in einen Audioblock ein.
@@ -685,6 +755,19 @@ def _fehler_deuten(ex):
         return ("Die GPU-Kennung ist mitten im Lauf abgelaufen. Das ist ein "
                 "Fehler in der App, nicht bei dir — bitte melden.")
     if "quota" in t or "exceeded" in t or "runs limit" in t:
+        # In der Meldung steht die amtliche Restzeit („30s left“). Die ist
+        # mehr wert als die eigene Zählung, denn sie kennt auch, was
+        # andere Spaces verbraucht haben.
+        treffer = re.search(r"([\d.]+)\s*s(?:ec\w*)?\s*left", t)
+        if treffer:
+            try:
+                _konto["daten"] = kontingent_korrigieren(
+                    _konto_laden(), float(treffer.group(1)), time.time(),
+                    GPU_BUDGET)
+                _konto["schmutzig"] = True
+                _konto_sichern()
+            except Exception:
+                traceback.print_exc()
         return ("Das GPU-Tageskontingent ist aufgebraucht. Es füllt sich 24 "
                 "Stunden nach der ersten Nutzung wieder auf.")
     if "gpu task aborted" in t or "aborted" in t:
@@ -773,6 +856,9 @@ def _auftrag_lauf(jid, sid, num_speakers, sprache):
                            time.time() - j["begonnen"],
                            (e.get("daten") or {}).get("dauer"))
         e["zeiten"] = dict(j["zeiten"])
+        e["kontingent"] = kontingent_stand(_konto_laden(), time.time(),
+                                           GPU_BUDGET)
+        _konto_sichern()
         j.update(stand="fertig", ergebnis=e, zeit=time.time())
         _push_senden("Analyse fertig",
                      f"{len(e.get('daten', {}).get('stats', {}))} Sprecher, "
@@ -782,6 +868,7 @@ def _auftrag_lauf(jid, sid, num_speakers, sprache):
         j.update(stand="fehler", fehler=_fehler_deuten(ex),
                  roh=f"{type(ex).__name__}: {ex}"[:300],
                  schritt_beim_fehler=j.get("schritt"), zeit=time.time())
+        _konto_sichern()
         _push_senden("Analyse fehlgeschlagen", j["fehler"][:120])
 
 
@@ -1047,6 +1134,22 @@ def push_anmelden_api(key, abo):
     except Exception as e:
         return {"ok": False, "fehler": str(e)}
     return {"ok": True, "geraete": len(z["abos"])}
+
+
+def kontingent_api(key):
+    """Wie viel GPU-Zeit heute noch übrig ist.
+
+    Selbst gezählt, weil es keine Schnittstelle dafür gibt — und deshalb
+    als Schätzung gekennzeichnet, bis eine echte Kontingent-Meldung die
+    Zahl bestätigt hat.
+    """
+    if not _pruefe(key):
+        return {"ok": False, "fehler": "Ungültiger Zugangsschlüssel."}
+    try:
+        return {"ok": True, **(kontingent_stand(_konto_laden(), time.time(),
+                                                GPU_BUDGET) or {})}
+    except Exception as e:
+        return {"ok": False, "fehler": str(e)}
 
 
 def status_api(key, request: gr.Request = None):
@@ -1437,6 +1540,8 @@ with gr.Blocks(title="Sprecher-Analyse API") as demo:
             api_name="auftrag")
         gr.Button("Push-Schlüssel").click(
             push_schluessel_api, [key], gr.JSON(), api_name="push_schluessel")
+        gr.Button("GPU-Kontingent").click(
+            kontingent_api, [key], gr.JSON(), api_name="kontingent")
         gr.Button("Push-Zustand").click(
             push_stand_api, [key], gr.JSON(), api_name="push_stand")
         gr.Button("Push prüfen").click(

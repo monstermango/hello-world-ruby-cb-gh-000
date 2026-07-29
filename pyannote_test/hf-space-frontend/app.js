@@ -88,6 +88,7 @@ async function loginPruefen(neuerKey) {
   // Token greift. Ohne await läse er den Anfangswert und behauptete auch
   // bei einwandfreiem Token, es fehle eines.
   await tokenStatusPruefen();
+  kontingentZeigen();
   fortsetzenAnbieten();
 }
 
@@ -103,6 +104,29 @@ function tokenMeldung() {
   if (!hfToken) return "Kein HF-Token hinterlegt — nur kleines anonymes "
     + "GPU-Kontingent.";
   return "HF-Token wurde nicht erkannt — bitte prüfen.";
+}
+
+// Es gibt keine Schnittstelle für das Restkontingent — die Zahl kommt aus
+// der eigenen Buchführung im Backend und ist als Schätzung gekennzeichnet,
+// solange keine echte Kontingent-Meldung sie bestätigt hat.
+async function kontingentZeigen(stand) {
+  const feld = $("#gpu-status");
+  try {
+    const k = stand || await rufe("/kontingent", [schluessel]);
+    if (!k || !k.ok && !k.prozent) { feld.hidden = true; return; }
+    const p = Math.round(k.prozent);
+    feld.hidden = false;
+    feld.textContent = `GPU ${p} %${k.geschaetzt ? "*" : ""}`;
+    feld.classList.toggle("warn", p <= 20);
+    const rest = Math.round((k.rest_s || 0) / 60);
+    feld.title = `Noch ${rest} min von ${Math.round(k.budget_s / 60)} min`
+      + (k.geschaetzt ? " — selbst gezählt, nur diese App" : " — bestätigt")
+      + (k.zuruecksetzung_in_s
+         ? `. Zurücksetzung in ${Math.round(k.zuruecksetzung_in_s / 3600)} h`
+         : "");
+  } catch (e) {
+    feld.hidden = true;
+  }
 }
 
 async function tokenStatusPruefen() {
@@ -391,6 +415,7 @@ async function analyseRahmen(arbeit) {
     if (!d.ok) throw new Error(d.fehler);
     laufLoeschen();
     letzteAnalyse = d;
+    kontingentZeigen(d.kontingent);
     // Der Hintergrundlauf sichert selbst — dann ist das Markdown schon
     // da und der Herunterladen-Knopf muss nicht auf einen Tastendruck
     // warten, der womöglich nie kommt.

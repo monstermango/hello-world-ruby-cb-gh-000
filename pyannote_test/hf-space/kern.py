@@ -58,6 +58,68 @@ def _decode_optionen(sprache=None):
     return gk
 
 
+# ------------------------------------------------------------ GPU-Konto
+# Es gibt keine Schnittstelle, die das Restkontingent verrät — der Wunsch
+# ist bei Hugging Face offen. Also selbst Buch führen: gezählt wird die
+# Zeit *innerhalb* der GPU-Funktionen, denn erst dort ist die Karte
+# zugeteilt; Wartezeit in der Schlange kostet nichts. Und wenn doch einmal
+# eine Kontingent-Meldung kommt, steht die echte Restzeit darin und
+# korrigiert die eigene Rechnung.
+KONTINGENT_S = 2400.0     # PRO-Tagesbudget laut Dokumentation (40 min)
+KONTINGENT_FENSTER = 24 * 3600
+
+
+def kontingent_buchen(konto, sekunden, jetzt):
+    """Schreibt verbrauchte GPU-Zeit fort und öffnet nötigenfalls ein Fenster.
+
+    Das Fenster läuft 24 Stunden ab der ersten Nutzung, nicht ab
+    Mitternacht — wer um 14 Uhr anfängt, hat am nächsten Tag um 14 Uhr
+    wieder das volle Budget.
+    """
+    konto = dict(konto or {})
+    beginn = konto.get("beginn")
+    if not beginn or jetzt - beginn >= KONTINGENT_FENSTER:
+        konto = {"beginn": jetzt, "verbraucht": 0.0}
+    konto["verbraucht"] = round(konto.get("verbraucht", 0.0)
+                                + max(0.0, sekunden), 1)
+    return konto
+
+
+def kontingent_korrigieren(konto, rest_s, jetzt, budget=KONTINGENT_S):
+    """Übernimmt die Restzeit aus einer Kontingent-Meldung.
+
+    Die ist im Gegensatz zur eigenen Zählung amtlich: sie kennt auch, was
+    andere Spaces verbraucht haben.
+    """
+    konto = dict(konto or {})
+    if not konto.get("beginn"):
+        konto["beginn"] = jetzt
+    konto["verbraucht"] = round(max(0.0, budget - max(0.0, rest_s)), 1)
+    konto["amtlich"] = jetzt
+    return konto
+
+
+def kontingent_stand(konto, jetzt, budget=KONTINGENT_S):
+    """Was von heute noch übrig ist — als Anteil und in Sekunden."""
+    if not budget or budget <= 0:
+        return None
+    beginn = (konto or {}).get("beginn")
+    verbraucht = (konto or {}).get("verbraucht", 0.0)
+    if not beginn or jetzt - beginn >= KONTINGENT_FENSTER:
+        beginn, verbraucht = None, 0.0
+    rest = max(0.0, budget - verbraucht)
+    return {
+        "verbraucht_s": round(verbraucht, 1),
+        "rest_s": round(rest, 1),
+        "budget_s": budget,
+        "prozent": round(100.0 * rest / budget, 1),
+        # Wann sich das Fenster wieder füllt; ohne Nutzung ist es voll.
+        "zuruecksetzung_in_s": (round(beginn + KONTINGENT_FENSTER - jetzt)
+                                if beginn else None),
+        "geschaetzt": not (konto or {}).get("amtlich"),
+    }
+
+
 def tempo(woerter, verarbeitung_s, audio_s):
     """Wie schnell die Kette gearbeitet hat.
 
