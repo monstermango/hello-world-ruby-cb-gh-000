@@ -137,10 +137,13 @@ async function tokenStatusPruefen() {
   } catch (e) {
     tokenAktiv = null;
   }
-  feld.hidden = tokenAktiv === null;
-  feld.textContent = tokenAktiv ? "Konto-Kontingent"
-    : hfToken ? "Token abgelehnt" : "ohne Token";
-  feld.classList.toggle("warn", tokenAktiv === false);
+  // Nur melden, wenn etwas nicht stimmt. „Alles in Ordnung“ ist der
+  // Normalfall und braucht keinen Platz in der Kopfzeile — die stand
+  // sonst zweizeilig da. Der Wortlaut steht weiterhin in den
+  // Einstellungen.
+  feld.hidden = tokenAktiv !== false;
+  feld.textContent = hfToken ? "Token?" : "ohne Token";
+  feld.classList.add("warn");
   $("#login-status").textContent = tokenMeldung();
 }
 

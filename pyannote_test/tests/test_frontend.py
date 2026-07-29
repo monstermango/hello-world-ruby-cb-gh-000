@@ -40,6 +40,8 @@ export class Client {
       }
       return {data: [{ok: true, stand: "fertig", ergebnis: window._ergebnis}]};
     }
+    if (ep === "/kontingent") return {data: [{ok: true, verbraucht_s: 120, rest_s: 2280,
+      budget_s: 2400, prozent: 95, zuruecksetzung_in_s: 70000, geschaetzt: true}]};
     if (ep === "/push_schluessel") return {data: [{ok: true, schluessel: "BTestKey"}]};
     if (ep === "/push_anmelden") { window._pushAbo = daten[1]; return {data: [{ok: true, geraete: 1}]}; }
     if (ep === "/lernen") { window._gelernt = daten; return {data: [{ok: true, falsch: daten[1], richtig: daten[2]}]}; }
@@ -171,14 +173,34 @@ async def main():
         await page.wait_for_timeout(800)
         assert not await page.locator("#login").is_visible(), "Overlay bleibt"
 
+        # 3a0. Die Kopfzeile muss einzeilig bleiben. Sie war zweizeilig,
+        #      weil zwei Abzeichen den Titel umbrechen ließen — und im
+        #      Normalfall braucht keines davon Platz.
+        kopf = await page.evaluate("""() => {
+          const h = document.querySelector('.topbar h1');
+          const stil = getComputedStyle(h);
+          return {hoehe: h.offsetHeight,
+                  zeile: parseFloat(stil.lineHeight) || parseFloat(stil.fontSize) * 1.5,
+                  bar: document.querySelector('.topbar').offsetHeight};
+        }""")
+        assert kopf["hoehe"] <= kopf["zeile"] * 1.4, \
+            f"Titel bricht um: {kopf}"
+        assert await page.locator("#token-status").is_hidden(), \
+            "Token-Abzeichen belegt Platz, obwohl alles in Ordnung ist"
+        # Das GPU-Abzeichen ist da — und die Zeile trägt es trotzdem.
+        assert await page.locator("#gpu-status").is_visible(), \
+            "GPU-Abzeichen fehlt"
+        assert "95" in await page.locator("#gpu-status").inner_text()
+        ueber = await querscrollung(page)
+        assert ueber == 0, f"Kopfzeile sprengt die Breite: {ueber}px"
+
         # 3a. Die Rückmeldung muss den Token-Status kennen, nicht raten.
         #     Ohne await auf die Statusabfrage stand hier die Falschmeldung
         #     "ohne gültiges HF-Token", obwohl das Token einwandfrei war.
         meldung = await page.locator("#toast").inner_text()
         assert "aktiv" in meldung, f"Token-Rückmeldung falsch: {meldung!r}"
-        abzeichen = await page.locator("#token-status").inner_text()
-        assert abzeichen == "Konto-Kontingent", \
-            f"Abzeichen falsch: {abzeichen!r}"
+        assert await page.locator("#token-status").is_hidden(), \
+            "im Normalfall kein Token-Abzeichen"
 
         # 3b. Einstellungen lassen sich öffnen und wieder schließen
         await page.locator("#btn-key").dispatch_event("click")

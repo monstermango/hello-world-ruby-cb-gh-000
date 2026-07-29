@@ -37,7 +37,11 @@ body {
   position: sticky; top: 0; background: var(--bg);
   transform: translateZ(0); z-index: 5;
 }
-.topbar h1 { font-size: 1.25rem; font-weight: 700 }
+/* Der Titel darf nie umbrechen — sonst wächst die Kopfzeile auf zwei
+   Zeilen, sobald rechts ein Abzeichen dazukommt. Lieber kürzen. */
+.topbar h1 { font-size: 1.25rem; font-weight: 700; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; min-width: 0 }
+.topbar .row { flex: 0 0 auto }
 
 main { max-width: 640px; margin: 0 auto; padding: 8px 16px }
 
@@ -69,7 +73,7 @@ button { font: inherit; border: 0; cursor: pointer; color: inherit; background: 
 .icon-btn:active { opacity: .6 }
 .sheet-kopf { display: flex; align-items: center; justify-content: space-between;
   margin: -6px -6px 6px 0 }
-.status { font-size: .75rem; padding: 3px 9px; border-radius: 999px;
+.status { font-size: .72rem; padding: 3px 8px; border-radius: 999px;
   background: var(--blase); color: var(--dim); white-space: nowrap }
 .status.warn { background: var(--warn-bg); color: var(--text) }
 
