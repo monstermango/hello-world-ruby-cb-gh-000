@@ -450,9 +450,9 @@ $("#btn-analyse").addEventListener("click", () => {
     if (!start.ok) throw new Error(start.fehler);
     // Ohne Kennung an der Startanfrage läuft die GPU-Zeit nicht über dein
     // Konto. Das soll auffallen, bevor die Aufnahme durchgelaufen ist.
-    if (start.mit_token === false && hfToken) {
-      toast("Achtung: Auftrag ohne dein HF-Token gestartet.");
-    }
+    // Kein Hinweis mehr auf das Token: die GPU-Arbeit läuft im Space unter
+    // dessen eigener Kennung, weil die der Anfrage nach wenigen Minuten
+    // abläuft und einen langen Lauf mittendrin abbrechen würde.
     auftragSpeichern(start.auftrag);
     // Die Spur läuft weiter — nicht mehr, um den Upload zu retten, sondern
     // damit Sperrbildschirm und Dynamic Island den Fortschritt zeigen.

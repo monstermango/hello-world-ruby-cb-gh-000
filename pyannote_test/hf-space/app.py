@@ -5,7 +5,6 @@ hier registrierten API-Endpunkte an. Jeder Endpunkt verlangt den
 Zugangsschlüssel (Secret APP_PASS); erst nach der Prüfung wird GPU-Zeit
 verbraucht.
 """
-import contextvars
 import hmac
 import json
 import os
@@ -666,6 +665,26 @@ AUFTRAEGE = {}
 AUFTRAG_TTL = 6 * 3600
 
 
+def _fehler_deuten(ex):
+    """Übersetzt die Meldung in etwas, mit dem man handeln kann.
+
+    „Expired token“ und „quota exceeded“ sehen im Rohtext ähnlich aus,
+    verlangen aber Gegenteiliges: einmal ist etwas kaputt, einmal ist
+    schlicht das Tagesbudget alle und Warten hilft.
+    """
+    t = f"{type(ex).__name__}: {ex}".lower()
+    if "expired" in t and "token" in t:
+        return ("Die GPU-Kennung ist mitten im Lauf abgelaufen. Das ist ein "
+                "Fehler in der App, nicht bei dir — bitte melden.")
+    if "quota" in t or "exceeded" in t or "runs limit" in t:
+        return ("Das GPU-Tageskontingent ist aufgebraucht. Es füllt sich 24 "
+                "Stunden nach der ersten Nutzung wieder auf.")
+    if "gpu task aborted" in t or "aborted" in t:
+        return ("Die GPU-Zuteilung wurde abgebrochen — meist Andrang. "
+                "Später noch einmal starten.")
+    return f"{type(ex).__name__}: {ex}"
+
+
 def _auftrag_lauf(jid, sid, num_speakers, sprache):
     """Fährt die komplette Kette durch, ohne dass jemand zusieht."""
     j = AUFTRAEGE[jid]
@@ -730,9 +749,10 @@ def _auftrag_lauf(jid, sid, num_speakers, sprache):
                      f"{_zeit(e.get('daten', {}).get('dauer', 0))} min")
     except Exception as ex:
         traceback.print_exc()
-        j.update(stand="fehler", fehler=f"{type(ex).__name__}: {ex}",
-                 zeit=time.time())
-        _push_senden("Analyse fehlgeschlagen", str(ex)[:120])
+        j.update(stand="fehler", fehler=_fehler_deuten(ex),
+                 roh=f"{type(ex).__name__}: {ex}"[:300],
+                 schritt_beim_fehler=j.get("schritt"), zeit=time.time())
+        _push_senden("Analyse fehlgeschlagen", j["fehler"][:120])
 
 
 def starten_api(key, sid, num_speakers, sprache=None, request: gr.Request = None):
@@ -759,14 +779,15 @@ def starten_api(key, sid, num_speakers, sprache=None, request: gr.Request = None
                       "von": 0, "bis": 1, "sid": sid, "zeit": time.time(),
                       "begonnen": time.time(), "mit_token": mit_token}
 
-    # Den Kontext dieser Anfrage mitnehmen. ZeroGPU ordnet die GPU-Zeit
-    # anhand eines Kopfzeilenwerts zu, den die Hub-Infrastruktur pro
-    # Anfrage setzt — und dieser Aufruf ist die Anfrage des Nutzers, mit
-    # seinem Token. Ein Thread erbt Kontextvariablen nicht von allein;
-    # ohne das Kopieren fiele die Zuordnung an der Threadgrenze weg.
-    ctx = contextvars.copy_context()
-    threading.Thread(target=ctx.run,
-                     args=(_auftrag_lauf, jid, sid, num_speakers, sprache),
+    # Bewusst OHNE den Kontext dieser Anfrage. Der Zuordnungs-Token hängt
+    # an der Anfrage und läuft nach wenigen Minuten ab; mitkopiert hält er
+    # für einen kurzen Auftrag, nicht für eine Stunde Audio — dann bricht
+    # der Lauf mittendrin mit „expired token“ ab. Ohne ihn läuft die
+    # Arbeit unter der Kennung des Space selbst, die nicht verfällt. Das
+    # ist nachgemessen: eine Reservierung über 200 s lief so durch, weit
+    # über dem anonymen Tagesbudget von 120 s.
+    threading.Thread(target=_auftrag_lauf,
+                     args=(jid, sid, num_speakers, sprache),
                      daemon=True).start()
     return {"ok": True, "auftrag": jid, "mit_token": mit_token}
 
