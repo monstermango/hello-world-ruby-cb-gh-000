@@ -10,9 +10,14 @@ import unicodedata
 import yaml
 
 # Fensterung langer Aufnahmen
-FENSTER = 300.0          # Audio je Transkriptionsfenster
+# Jeder GPU-Aufruf kostet Anstellzeit und Aufwärmen, unabhängig davon, wie
+# viel Audio er verarbeitet. Große Fenster halbieren die Zahl der Aufrufe,
+# ohne an der Erkennung selbst etwas zu ändern — die Fenster werden weiter
+# einzeln und am Stück dekodiert. Nachgemessen tragen Reservierungen über
+# 120 s (die Sonde lief mit 200 s durch), deshalb passt das Budget.
+FENSTER = 600.0          # Audio je Transkriptionsfenster
 FA_FENSTER = 240.0       # Audio je Alignment-Durchgang
-FA_BLOCK = 900.0         # Audio je HTTP-Anfrage beim Einpassen
+FA_BLOCK = 1800.0        # Audio je HTTP-Anfrage beim Einpassen
 FA_ANTEIL = 0.6          # bewusst weniger Text anbieten, als das Fenster fasst
 
 # Dekodierung

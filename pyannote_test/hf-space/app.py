@@ -73,10 +73,18 @@ _asr_cache = {}
 def _asr_holen(sprache):
     name = ASR_MODELLE.get(sprache or "", ASR_MODELLE["*"])
     if name not in _asr_cache:
-        _asr_cache[name] = hf_pipeline(
-            "automatic-speech-recognition", model=name,
-            torch_dtype=torch.float16, device="cuda",
-        )
+        # SDPA rechnet die Aufmerksamkeit über PyTorchs eigene Kerne statt
+        # über die Referenzschleife — dieselben Ausgaben, spürbar
+        # schneller. Fällt zurück, falls die Fassung es nicht kennt.
+        gemeinsam = dict(model=name, torch_dtype=torch.float16, device="cuda")
+        try:
+            _asr_cache[name] = hf_pipeline(
+                "automatic-speech-recognition",
+                model_kwargs={"attn_implementation": "sdpa"}, **gemeinsam)
+        except Exception:
+            traceback.print_exc()
+            _asr_cache[name] = hf_pipeline(
+                "automatic-speech-recognition", **gemeinsam)
     return _asr_cache[name]
 
 
@@ -261,7 +269,7 @@ def _asr_dauer(audio_path, start, ende, sprache=None, kontext=""):
     # verwirft entgleiste Abschnitte und dekodiert sie erneut, im
     # schlimmsten Fall fünfmal. Das Budget ist eine Reservierung, keine
     # Abrechnung — zu knapp bemessen bricht der Lauf mittendrin ab.
-    return int(min(120, max(60, 40 + (ende - start) / 2)))
+    return int(min(200, max(60, 40 + (ende - start) / 2)))
 
 
 @spaces.GPU(duration=_asr_dauer)
@@ -389,7 +397,7 @@ def _aligniere_bereich(audio_path, worte, start, ende, rate, schluss):
 
 
 def _fa_dauer(audio_path, worte, start, block_ende, rate, gesamt):
-    return int(min(120, max(30, 20 + (block_ende - start) / 10)))
+    return int(min(200, max(30, 20 + (block_ende - start) / 10)))
 
 
 @spaces.GPU(duration=_fa_dauer)
@@ -688,8 +696,19 @@ def _fehler_deuten(ex):
 def _auftrag_lauf(jid, sid, num_speakers, sprache):
     """Fährt die komplette Kette durch, ohne dass jemand zusieht."""
     j = AUFTRAEGE[jid]
+    # Wo die Zeit hingeht, gemessen statt vermutet — sonst optimiert man
+    # beim nächsten Mal wieder die falsche Stelle.
+    j["zeiten"] = {}
+    _uhr = {"t": time.time(), "name": None}
+
+    def takt(name):
+        jetzt = time.time()
+        if _uhr["name"]:
+            j["zeiten"][_uhr["name"]] = round(
+                j["zeiten"].get(_uhr["name"], 0.0) + jetzt - _uhr["t"], 1)
+        _uhr.update(t=jetzt, name=name)
     try:
-        j.update(schritt="Audio vorbereiten")
+        takt("Audio vorbereiten"); j.update(schritt="Audio vorbereiten")
         s = _sitzung(sid)
         if not s:
             raise RuntimeError("Sitzung abgelaufen.")
@@ -698,13 +717,14 @@ def _auftrag_lauf(jid, sid, num_speakers, sprache):
         except subprocess.CalledProcessError:
             raise RuntimeError("Audioformat konnte nicht gelesen werden.")
 
-        j.update(schritt="Sprecher erkennen")
+        takt("Sprecher erkennen"); j.update(schritt="Sprecher erkennen")
         r = diarisieren_api(APP_KEY, sid, num_speakers, sprache)
         if not r.get("ok"):
             raise RuntimeError(r.get("fehler", "Sprechererkennung fehlgeschlagen"))
         gesamt = max(1, int(r.get("abschnitte") or 1))
         rest, art = restzeit(time.time() - j["begonnen"], 0, gesamt,
                              (_sitzung(sid) or {}).get("dauer"))
+        takt("Text erkennen")
         j.update(stand="laeuft", schritt="Text erkennen", von=0, bis=gesamt,
                  rest_s=rest, rest_art=art)
 
@@ -723,7 +743,7 @@ def _auftrag_lauf(jid, sid, num_speakers, sprache):
             # Fenster-Erkennung der Index.
             i = a.get("index", i) + 1 if "index" in a else i
 
-        j.update(schritt="Zusammenstellen")
+        takt("Zusammenstellen"); j.update(schritt="Zusammenstellen")
         e = abschliessen_api(APP_KEY, sid)
         if not e.get("ok"):
             raise RuntimeError(e.get("fehler", "Abschluss fehlgeschlagen"))
@@ -733,7 +753,7 @@ def _auftrag_lauf(jid, sid, num_speakers, sprache):
         # ohne das lag das Ergebnis nur im Arbeitsspeicher und war beim
         # Schließen der App verloren. Benannt wird mit dem, was schon
         # bekannt ist; Nachbenennen ersetzt später dieselbe Datei.
-        j.update(schritt="Sichern")
+        takt("Sichern"); j.update(schritt="Sichern")
         try:
             namen = dict(e.get("vorschlag") or {})
             md = _markdown(e["daten"], e.get("quelle") or "aufnahme",
@@ -743,6 +763,7 @@ def _auftrag_lauf(jid, sid, num_speakers, sprache):
         except Exception:
             traceback.print_exc()
 
+        takt(None)
         j.update(stand="fertig", ergebnis=e, zeit=time.time())
         _push_senden("Analyse fertig",
                      f"{len(e.get('daten', {}).get('stats', {}))} Sprecher, "
@@ -1032,7 +1053,8 @@ def status_api(key, request: gr.Request = None):
     return {"ok": True, "token": auth.lower().startswith("bearer hf_")}
 
 
-def vorbereiten_api(key, audio, transkript=None, kontext=None):
+def vorbereiten_api(key, audio, transkript=None, kontext=None,
+                    mit_abgleich=False):
     """Schritt 1: Audio entgegennehmen und in WAV wandeln.
 
     Wird ein Transkript mitgegeben, wird dieses später eingepasst statt
@@ -1052,6 +1074,7 @@ def vorbereiten_api(key, audio, transkript=None, kontext=None):
                       "quelle": os.path.basename(audio), "zeit": time.time(),
                       "dauer": None, "chunks": [],
                       "worte": worte, "fa_zeit": 0.0, "fa_wort": 0,
+                      "mit_abgleich": bool(mit_abgleich),
                       "eigener": (kontext or "").strip(),
                       "kontext": _kontext_bauen((kontext or "").strip(),
                                                 _glossar_laden())}
@@ -1099,11 +1122,13 @@ def diarisieren_api(key, sid, num_speakers, sprache=None):
 
     fa_abschnitte = max(1, math.ceil(s["dauer"] / FA_FENSTER))
     asr_abschnitte = max(1, len(s["fenster"]) - 1)
-    if s.get("worte"):
-        # Erst das Transkript einpassen, danach zum Abgleich selbst
-        # erkennen. Zwei unabhängige Erkennungen sind der einzige
-        # kostenlose Hinweis darauf, wo der Text unsicher ist.
+    if s.get("worte") and s.get("mit_abgleich"):
+        # Einpassen und danach zum Abgleich selbst erkennen — der einzige
+        # kostenlose Hinweis darauf, wo der Text unsicher ist. Kostet
+        # allerdings den doppelten Durchgang, deshalb nur auf Wunsch.
         abschnitte = fa_abschnitte + asr_abschnitte
+    elif s.get("worte"):
+        abschnitte = fa_abschnitte
     else:
         abschnitte = asr_abschnitte
     return {"ok": True, "sprecher": len(stats), "sprache": sprache,
@@ -1127,6 +1152,9 @@ def transkribieren_api(key, sid, index):
             return {"ok": False,
                     "fehler": f"Transkript einpassen fehlgeschlagen: "
                               f"{type(e).__name__}: {e}"}
+        if not weiter and not s.get("mit_abgleich"):
+            return {"ok": True, "weiter": False, "schritt": "einpassen",
+                    "fortschritt": 1.0}
         if not weiter:
             # Eingepasst. Jetzt dieselbe Aufnahme selbst erkennen, damit
             # sich die beiden Ergebnisse gegenseitig prüfen können.
@@ -1371,8 +1399,11 @@ with gr.Blocks(title="Sprecher-Analyse API") as demo:
     with gr.Tab("Schrittweise (lange Aufnahmen)"):
         sid = gr.Textbox(label="Sitzungs-ID")
         idx = gr.Number(value=0, precision=0, label="Abschnitt")
+        abgleich_feld = gr.Checkbox(
+            value=False, label="Zusätzlich selbst erkennen (Abgleich)")
         gr.Button("1 · Vorbereiten").click(
-            vorbereiten_api, [key, audio, transkript_feld, kontext_feld],
+            vorbereiten_api,
+            [key, audio, transkript_feld, kontext_feld, abgleich_feld],
             gr.JSON(), api_name="vorbereiten")
         gr.Button("2 · Sprecher erkennen").click(
             diarisieren_api, [key, sid, num_speakers, sprache_feld], gr.JSON(),

@@ -436,7 +436,8 @@ $("#btn-analyse").addEventListener("click", () => {
     const kontext = $("#kontext").value.trim();
     localStorage.setItem("sa_kontext", kontext);
     const vor = await rufeHartnaeckig(
-      "/vorbereiten", [schluessel, audioDatei, transkript, kontext]);
+      "/vorbereiten", [schluessel, audioDatei, transkript, kontext,
+                       $("#abgleich").checked]);
     if (!vor.ok) throw new Error(vor.fehler);
 
     const spr = $("#sprache").value;
