@@ -83,6 +83,7 @@ window._ergebnis = {ok: true,
       vorschlag: {B: "Martha"},
       qualitaet: {stufe: "schlecht", snr_db: 9.4, rat: ["Gerät näher an die Sprechenden legen."]},
       abdruecke: {A: [1, 0], B: [0, 1]},
+      tempo: {woerter: 1772, verarbeitung_s: 184.0, wpm: 577.8, echtzeit: 4.8},
       namen: {A: "Sprecher 1", B: "Sprecher 2"},
       farben: {A: "#4e79a7", B: "#f28e2b"},
       daten: {dauer: 23.4,
@@ -244,7 +245,7 @@ async def main():
             f"behauptet den Auftrag, bevor es ihn gibt: {vorher!r}"
         await page.wait_for_timeout(12000)
         assert await page.locator(".sa-bubble").count() == 4, "Sprechblasen fehlen"
-        assert "Deutsch" in await page.locator(".sa-meta").inner_text(), \
+        assert "Deutsch" in await page.locator(".sa-meta:not(.tempo)").inner_text(), \
             "Sprache fehlt"
         opt = await page.evaluate("window._verbindungsOptionen")
         assert opt and opt.get("token") == "hf_testtoken", \
@@ -258,6 +259,14 @@ async def main():
         warnung = await page.locator(".w-overlap").inner_text()
         assert "unsicher" in warnung, f"Hinweis ohne Aussage: {warnung!r}"
         assert len(warnung) < 200, f"Hinweis zu lang ({len(warnung)}): {warnung!r}"
+
+        # 4a1b. Die Tempozahlen gehören sichtbar ins Ergebnis — sonst
+        #       lässt sich nach einer Änderung nicht sagen, ob sie
+        #       etwas gebracht hat.
+        tempo = await page.locator(".sa-meta.tempo").inner_text()
+        for teil in ("1772", "578", "4.8"):
+            assert teil in tempo.replace(",", "."), \
+                f"{teil} fehlt in den Tempozahlen: {tempo!r}"
 
         # 4a2. Unsichere Wörter müssen als solche erkennbar sein — sonst
         #      tritt ein wackliges Wort mit derselben Autorität auf wie

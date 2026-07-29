@@ -269,6 +269,59 @@ def test_bestaetigte_korrektur_schlaegt_die_aehnlichkeit():
     assert "Martha" in neu[0]["text"]
 
 
+# ---------- Tempo ----------
+
+def test_tempo_rechnet_die_drei_zahlen():
+    t = kern.tempo(woerter=1800, verarbeitung_s=180.0, audio_s=900.0)
+    assert t["wpm"] == 600.0, "1800 Wörter in 3 Minuten"
+    assert t["echtzeit"] == 5.0, "900 s Audio in 180 s gerechnet"
+    assert t["verarbeitung_s"] == 180.0 and t["woerter"] == 1800
+
+
+def test_echtzeitfaktor_haengt_nicht_an_der_sprechdichte():
+    # Genau darum ist er die Zahl, an der sich Änderungen messen lassen:
+    # doppelt so viele Wörter im selben Audio ändern ihn nicht.
+    a = kern.tempo(900, 100.0, 600.0)
+    b = kern.tempo(1800, 100.0, 600.0)
+    assert a["echtzeit"] == b["echtzeit"]
+    assert b["wpm"] == 2 * a["wpm"], "die Wortrate schon"
+
+
+def test_ohne_verarbeitungszeit_keine_behauptung():
+    assert kern.tempo(100, 0, 500.0) is None
+    assert kern.tempo(100, None, 500.0) is None
+
+
+def test_leeres_transkript_ergibt_null_woerter():
+    t = kern.tempo(0, 60.0, 300.0)
+    assert t["woerter"] == 0 and t["wpm"] == 0.0
+
+
+def test_woerter_werden_ueber_alle_segmente_gezaehlt():
+    seg = [{"text": "eins zwei drei"}, {"text": None}, {"text": "vier"}]
+    assert kern._woerter_zaehlen(seg) == 4
+    assert kern._woerter_zaehlen([]) == 0
+    assert kern._woerter_zaehlen(None) == 0
+
+
+def test_tempo_landet_im_frontmatter():
+    # Damit sich Läufe später über den ganzen Ordner vergleichen lassen.
+    d = _beispiel_daten()
+    d["tempo"] = kern.tempo(120, 60.0, 9.0)
+    md = kern._markdown(d, "a.m4a", datetime.datetime(2026, 7, 29, 9, 5))
+    fm, _ = kern._frontmatter(md)
+    assert fm["woerter"] == 120
+    assert fm["woerter_pro_minute"] == 120.0
+    assert fm["echtzeitfaktor"] == 0.15
+
+
+def test_ohne_tempo_bleibt_das_frontmatter_schlank():
+    md = kern._markdown(_beispiel_daten(), "a.m4a",
+                        datetime.datetime(2026, 7, 29, 9, 5))
+    fm, _ = kern._frontmatter(md)
+    assert "woerter" not in fm and "echtzeitfaktor" not in fm
+
+
 # ---------- Restzeit ----------
 
 def test_ohne_fortschritt_wird_aus_der_audiolaenge_geschaetzt():

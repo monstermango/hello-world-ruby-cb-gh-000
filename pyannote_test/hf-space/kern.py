@@ -58,6 +58,30 @@ def _decode_optionen(sprache=None):
     return gk
 
 
+def tempo(woerter, verarbeitung_s, audio_s):
+    """Wie schnell die Kette gearbeitet hat.
+
+    Drei Zahlen, weil jede etwas anderes beantwortet. Wörter je Minute
+    sagt, wie viel Text in der Zeit entstand — hängt aber daran, wie
+    dicht gesprochen wurde. Der Echtzeitfaktor ist davon unabhängig und
+    damit das, woran sich Änderungen an der Kette messen lassen: wie viel
+    Audio je Sekunde Rechenzeit. Und die Rechenzeit selbst, weil die am
+    Ende zählt, wenn man wartet.
+    """
+    if not verarbeitung_s or verarbeitung_s <= 0:
+        return None
+    return {
+        "woerter": int(woerter or 0),
+        "verarbeitung_s": round(verarbeitung_s, 1),
+        "wpm": round((woerter or 0) / (verarbeitung_s / 60.0), 1),
+        "echtzeit": round((audio_s or 0) / verarbeitung_s, 2),
+    }
+
+
+def _woerter_zaehlen(segmente):
+    return sum(len((s.get("text") or "").split()) for s in segmente or [])
+
+
 def restzeit(verstrichen, getan, gesamt, dauer_audio=None):
     """Schätzt, wie lange der Auftrag noch braucht — in Sekunden.
 
@@ -248,6 +272,14 @@ def _markdown(daten, quelle, zeitpunkt, namen=None):
         "redeanteile_s": {namen[lb]: st["dauer"]
                           for lb, st in daten["stats"].items()},
     }
+    # Ins Frontmatter, damit sich die Läufe später über den ganzen Ordner
+    # hinweg vergleichen lassen — sonst ist die Zahl nach dem Schließen weg.
+    t = daten.get("tempo")
+    if t:
+        frontmatter["woerter"] = t["woerter"]
+        frontmatter["verarbeitung_s"] = t["verarbeitung_s"]
+        frontmatter["woerter_pro_minute"] = t["wpm"]
+        frontmatter["echtzeitfaktor"] = t["echtzeit"]
     md = ["---", yaml.safe_dump(frontmatter, allow_unicode=True,
                                 sort_keys=False).strip(), "---", "",
           f"# {frontmatter['titel']}", ""]

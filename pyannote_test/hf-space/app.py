@@ -42,7 +42,7 @@ from kern import (FA_ANTEIL, FA_BLOCK, FA_FENSTER, FARBEN, FENSTER,
                   _frontmatter, _kontext_bauen, _markdown, _namen_farben,
                   _rangfolge, _romanisieren, _sprecher_bei, _zeit,
                   _zusammenfuegen, glossar_lesen, glossar_schreiben,
-                  restzeit,
+                  restzeit, tempo, _woerter_zaehlen,
                   pfad_erlaubt)
 
 HF_TOKEN = os.environ["HF_TOKEN"]
@@ -756,6 +756,9 @@ def _auftrag_lauf(jid, sid, num_speakers, sprache):
         takt("Sichern"); j.update(schritt="Sichern")
         try:
             namen = dict(e.get("vorschlag") or {})
+            e["daten"]["tempo"] = tempo(
+                _woerter_zaehlen(e["daten"].get("segmente")),
+                time.time() - j["begonnen"], e["daten"].get("dauer"))
             md = _markdown(e["daten"], e.get("quelle") or "aufnahme",
                            datetime.fromisoformat(e["zeitpunkt"]), namen)
             e["pfad"] = _speichern(md, datetime.fromisoformat(e["zeitpunkt"]))
@@ -764,6 +767,12 @@ def _auftrag_lauf(jid, sid, num_speakers, sprache):
             traceback.print_exc()
 
         takt(None)
+        # Die Zahlen gehören ins Ergebnis, nicht nur in den Auftrag: sonst
+        # sind sie weg, sobald man die App einmal geschlossen hat.
+        e["tempo"] = tempo(_woerter_zaehlen(e.get("daten", {}).get("segmente")),
+                           time.time() - j["begonnen"],
+                           (e.get("daten") or {}).get("dauer"))
+        e["zeiten"] = dict(j["zeiten"])
         j.update(stand="fertig", ergebnis=e, zeit=time.time())
         _push_senden("Analyse fertig",
                      f"{len(e.get('daten', {}).get('stats', {}))} Sprecher, "

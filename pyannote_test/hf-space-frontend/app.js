@@ -700,6 +700,17 @@ function ergebnisAnzeigen(d, gespeichert) {
     `<span>👥 ${labels.length} Sprecher</span>${sprache}` +
     `<span>📅 ${wann.toLocaleString("de-DE", { dateStyle: "short", timeStyle: "short" })}</span></div>`;
 
+  // Wie schnell gearbeitet wurde. Der Echtzeitfaktor ist die Zahl, an der
+  // sich Änderungen an der Kette messen lassen — Wörter je Minute hängt
+  // auch daran, wie dicht gesprochen wurde.
+  const t = d.tempo || daten.tempo;
+  const tempoZeile = t
+    ? `<div class="sa-meta tempo"><span>📝 ${t.woerter} Wörter</span>` +
+      `<span>⚡ ${Math.round(t.wpm)} W/min</span>` +
+      `<span>⏱️ ${zeit(t.verarbeitung_s)} min Rechenzeit</span>` +
+      `<span>🚀 ${t.echtzeit.toFixed(1)}× Echtzeit</span></div>`
+    : "";
+
   const sortiert = [...labels].sort(
     (a, b) => daten.stats[b].dauer - daten.stats[a].dauer);
   let balken = "", legende = "";
@@ -833,7 +844,7 @@ function ergebnisAnzeigen(d, gespeichert) {
   // Meeting soll man dafür nicht durch das ganze Protokoll scrollen.
   $("#ergebnis").innerHTML =
     `<div class="card">${meta}<div class="sa-bar">${balken}</div>` +
-    `<div class="sa-legs">${legende}</div>${qualitaet}${abschluss}` +
+    `<div class="sa-legs">${legende}</div>${tempoZeile}${qualitaet}${abschluss}` +
     `${zeitleiste}${gespraech}${hinweis}${gelernt}</div>`;
 
   if (gespeichert) {
