@@ -474,22 +474,40 @@ def protokoll_text(markdown):
 # verworfen — damit sah ein wackliges Wort im Protokoll genauso sicher aus
 # wie ein zweifelsfreies. Die Schwelle ist ein Startwert; mit
 # tests/wortfehlerrate.py lässt sie sich an echtem Material nachziehen.
-KONFIDENZ_SCHWELLE = 0.55
+KONFIDENZ_ANTEIL = 0.10   # so viel vom Text darf höchstens wackelig sein
+KONFIDENZ_DECKEL = 0.90   # darüber gilt ein Wort nie als unsicher
 
 
-def _konfidenz_markieren(chunks, strittig_idx=()):
-    """Markiert Wörter, denen man nicht trauen sollte.
+def _konfidenz_markieren(chunks, strittig_idx=(), anteil=KONFIDENZ_ANTEIL):
+    """Markiert die Wörter, denen man am wenigsten trauen sollte.
 
-    Zwei unabhängige Gründe, beide gleich viel wert: der Aligner konnte
-    das Wort im Audio nicht sauber wiederfinden, oder die zweite Erkennung
-    hat etwas anderes gehört.
+    Bewusst relativ statt an einem festen Wert. Ein absoluter Schnitt
+    setzt voraus, dass man die Werteverteilung des Aligners kennt — tut
+    man nicht, und beim ersten echten Lauf lag praktisch der gesamte Text
+    darunter. Alles zu markieren sagt genauso wenig wie nichts zu
+    markieren.
+
+    Also: das wackeligste Zehntel dieser Aufnahme, gemessen an ihrer
+    eigenen Verteilung. Der Deckel verhindert, dass in einer rundum
+    sauberen Aufnahme trotzdem Wörter angestrichen werden, nur weil
+    irgendeines das schlechteste sein muss.
+
+    Ein Widerspruch der zweiten Erkennung zählt unabhängig davon — der ist
+    keine Frage des Grades.
     """
     strittig_idx = set(strittig_idx)
+    werte = sorted(c["wert"] for c in chunks
+                   if c.get("wert") is not None)
+    grenze = None
+    if werte:
+        pos = max(0, min(len(werte) - 1, int(len(werte) * anteil) - 1))
+        grenze = min(werte[pos], KONFIDENZ_DECKEL)
+
     for i, c in enumerate(chunks):
         wert = c.get("wert")
         c["unsicher"] = bool(
             i in strittig_idx
-            or (wert is not None and wert < KONFIDENZ_SCHWELLE))
+            or (wert is not None and grenze is not None and wert <= grenze))
     return chunks
 
 

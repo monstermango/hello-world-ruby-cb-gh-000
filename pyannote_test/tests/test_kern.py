@@ -122,6 +122,52 @@ def test_schwacher_alignmentwert_gilt_als_unsicher():
     assert c[0]["unsicher"] and not c[1]["unsicher"]
 
 
+def _markiert(werte, **kw):
+    c = kern._konfidenz_markieren([{"text": "w", "wert": w} for w in werte], **kw)
+    return sum(1 for x in c if x["unsicher"])
+
+
+def test_nie_der_ganze_text():
+    """Der Fehler, der im Betrieb auffiel.
+
+    Mit festem Schnitt bei 0.55 lag eine ganze Aufnahme darunter und war
+    Wort für Wort angestrichen. Alles zu markieren sagt genauso wenig wie
+    nichts zu markieren.
+    """
+    werte = [0.2 + 0.001 * i for i in range(500)]      # alle niedrig
+    n = _markiert(werte)
+    assert n <= len(werte) * 0.2, f"{n} von {len(werte)} markiert"
+
+
+def test_etwa_ein_zehntel_wird_markiert():
+    werte = [i / 500 for i in range(500)]
+    assert 30 <= _markiert(werte) <= 70
+
+
+def test_saubere_aufnahme_bekommt_keine_markierung():
+    # Wenn alles gut sitzt, darf nichts angestrichen werden, nur weil
+    # irgendein Wort das schlechteste sein muss.
+    assert _markiert([0.93 + 0.0001 * i for i in range(400)]) == 0
+
+
+def test_einzelne_ausreisser_werden_getroffen():
+    werte = [0.96] * 380 + [0.1] * 20
+    assert _markiert(werte) == 20, "genau die Ausreisser, nicht mehr"
+
+
+def test_widerspruch_zaehlt_unabhaengig_von_der_verteilung():
+    # Auch in einer rundum sauberen Aufnahme bleibt ein Widerspruch der
+    # zweiten Erkennung eine Markierung wert.
+    c = kern._konfidenz_markieren(
+        [{"text": "w", "wert": 0.99} for _ in range(50)], {7})
+    assert c[7]["unsicher"] and sum(1 for x in c if x["unsicher"]) == 1
+
+
+def test_ohne_werte_wird_nichts_behauptet():
+    c = kern._konfidenz_markieren([{"text": "a"}, {"text": "b"}])
+    assert not any(x["unsicher"] for x in c)
+
+
 def test_widerspruch_macht_unsicher_trotz_gutem_wert():
     c = kern._konfidenz_markieren([{"text": "x", "wert": 0.99}], {0})
     assert c[0]["unsicher"], "der Widerspruch der zweiten Erkennung zählt auch"

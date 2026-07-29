@@ -33,8 +33,9 @@ body {
 .topbar {
   display: flex; align-items: center; justify-content: space-between;
   padding: calc(10px + env(safe-area-inset-top)) 16px 10px;
-  position: sticky; top: 0; background: color-mix(in srgb, var(--bg) 88%, transparent);
-  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); z-index: 5;
+  /* Aus demselben Grund deckend wie die untere Leiste. */
+  position: sticky; top: 0; background: var(--bg);
+  transform: translateZ(0); z-index: 5;
 }
 .topbar h1 { font-size: 1.25rem; font-weight: 700 }
 
@@ -226,8 +227,14 @@ summary b { color: var(--text) }
 /* Tabbar */
 .tabbar {
   position: fixed; bottom: 0; left: 0; right: 0; z-index: 5;
-  display: flex; background: color-mix(in srgb, var(--fläche) 92%, transparent);
-  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+  display: flex;
+  /* Deckend und ohne backdrop-filter. Ein durchscheinender Hintergrund
+     muss bei jedem Scrollschritt neu berechnet werden; iOS schiebt das
+     auf und die feststehende Leiste bleibt dann mitten im Text stehen.
+     Die eigene Komposition-Ebene hält sie an ihrem Platz. */
+  background: var(--fläche);
+  transform: translateZ(0);
+  will-change: transform;
   border-top: 1px solid var(--linie);
   padding-bottom: env(safe-area-inset-bottom);
 }
