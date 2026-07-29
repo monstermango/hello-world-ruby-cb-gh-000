@@ -145,9 +145,14 @@
   <section id="view-verlauf" class="view" hidden>
     <div id="verlauf-liste"></div>
     <div id="eintrag-detail" hidden>
-      <button id="btn-zurueck" class="ghost">← Zurück zum Verlauf</button>
+      <!-- Bleibt beim Scrollen stehen: ein Protokoll ist lang, und der
+           Knopf zum Herunterladen lag vorher dahinter. -->
+      <div class="detail-kopf row">
+        <button id="btn-zurueck" class="ghost">← Verlauf</button>
+        <button id="btn-download" class="primary knapp">⬇︎ Markdown</button>
+        <button id="btn-teilen-verlauf" class="ghost" hidden>Teilen</button>
+      </div>
       <div id="eintrag-inhalt" class="card md"></div>
-      <button id="btn-download" class="primary">Markdown herunterladen</button>
     </div>
   </section>
 </main>

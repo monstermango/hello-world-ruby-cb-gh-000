@@ -213,6 +213,20 @@ summary b { color: var(--text) }
   background: var(--bg); color: var(--text) }
 
 /* Verlauf */
+/* Klebt unter der Kopfzeile. Deren Höhe wird zur Laufzeit gemessen und
+   als Variable gesetzt — geraten wäre sie je nach Gerät und
+   Sicherheitsabstand daneben. */
+.detail-kopf {
+  position: sticky; top: var(--kopfhoehe, 56px); z-index: 4;
+  gap: 8px; padding: 8px 0; margin-bottom: 4px;
+  background: var(--bg); transform: translateZ(0);
+}
+.detail-kopf .primary { margin-top: 0 }
+/* Im Kopf nebeneinander statt jeder über die volle Breite. */
+.primary.knapp { width: auto; flex: 1; min-height: 44px; font-size: .95rem;
+  padding: 0 14px }
+.detail-kopf .ghost { flex: 0 0 auto; white-space: nowrap }
+
 .v-card { width: 100%; text-align: left; background: var(--fläche);
   border-radius: 16px; padding: 14px 16px; margin: 10px 0;
   box-shadow: 0 1px 3px rgba(0, 0, 0, .06) }

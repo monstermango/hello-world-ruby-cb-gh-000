@@ -53,7 +53,7 @@ export class Client {
     ]}]};
     if (ep === "/eintrag") return {data: [{ok: true,
       frontmatter: {titel: "Aufnahme 2026-07-25 07:04"},
-      body: "# Aufnahme\\n\\n## Redeanteile\\n\\n| Sprecher | Anteil |\\n|---|---|\\n| Sprecher 1 | 58 % |",
+      body: "# Aufnahme\\n\\n" + "Ein langer Absatz voller Text. ".repeat(400),
       markdown: "---\\ntitel: x\\n---\\n# Aufnahme"}]};
     if (ep === "/vorbereiten") {
       // Bewusst langsam: das Hochladen dauert in Wirklichkeit, und nur
@@ -143,9 +143,12 @@ async def main():
         await page.route("**/cdn.jsdelivr.net/npm/marked@12/+esm",
                          lambda r: r.fulfill(
                              content_type="text/javascript",
+                             # Gibt den Text wirklich aus: nur so wird die
+                             # Seite lang genug, um Scrollprobleme zu zeigen.
                              body="export const marked = {parse: (t) => "
                                   "'<h2>MD</h2><table><tbody><tr><td>x</td>"
-                                  "</tr></tbody></table>'};"))
+                                  "</tr></tbody></table><p>' + "
+                                  "String(t).replace(/</g, '') + '</p>'};"))
         fehler = []
         page.on("pageerror", lambda e: fehler.append(str(e)))
         await page.goto(f"http://127.0.0.1:{PORT}/?hf=hf_testtoken", wait_until="networkidle")
@@ -359,6 +362,24 @@ async def main():
         await page.wait_for_timeout(800)
         assert await page.locator("#eintrag-detail").is_visible(), "Detail fehlt"
         assert await page.locator("#eintrag-inhalt table").count() == 1, "MD-Tabelle fehlt"
+
+        # 5a. Herunterladen muss erreichbar sein, ohne durch das ganze
+        #     Protokoll zu scrollen — genau das war die Beschwerde.
+        hoehe = await page.evaluate("document.body.scrollHeight")
+        assert hoehe > 2000, f"Testeintrag zu kurz, um das zu prüfen: {hoehe}"
+        kasten = await page.locator("#btn-download").bounding_box()
+        sicht = await page.evaluate("window.innerHeight")
+        assert kasten and 0 <= kasten["y"] < sicht, \
+            f"Herunterladen liegt außerhalb des Bildes: {kasten}"
+
+        # 5b. Und bleibt erreichbar, auch weit unten im Protokoll.
+        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        await page.wait_for_timeout(400)
+        kasten = await page.locator("#btn-download").bounding_box()
+        assert kasten and 0 <= kasten["y"] < sicht, \
+            f"Herunterladen scrollt weg: {kasten}"
+        await page.evaluate("window.scrollTo(0, 0)")
+        await page.wait_for_timeout(200)
         await page.screenshot(path=str(Path(tempfile.gettempdir()) / "fe_eintrag.png"), full_page=True)
 
         # 6. Direktlink-Login (?key=...)

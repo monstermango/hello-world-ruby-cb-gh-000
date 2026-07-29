@@ -242,6 +242,16 @@ document.addEventListener("keydown", (e) => {
 
 // ---------- Navigation ----------
 
+// Die Kopfzeilenhöhe hängt an Schriftgröße und Sicherheitsabstand des
+// Geräts — messen statt schätzen, sonst klebt die Detailleiste falsch.
+function kopfhoeheSetzen() {
+  const h = document.querySelector(".topbar")?.offsetHeight || 56;
+  document.documentElement.style.setProperty("--kopfhoehe", `${h}px`);
+}
+kopfhoeheSetzen();
+addEventListener("resize", kopfhoeheSetzen);
+addEventListener("orientationchange", kopfhoeheSetzen);
+
 document.querySelectorAll(".tab").forEach((btn) => {
   btn.addEventListener("click", () => {
     document.querySelectorAll(".tab").forEach((b) =>
@@ -1039,10 +1049,27 @@ async function eintragOeffnen(pfad) {
     $("#eintrag-inhalt").innerHTML = marked.parse(d.body || "");
     $("#verlauf-liste").hidden = true;
     $("#eintrag-detail").hidden = false;
+    $("#btn-teilen-verlauf").hidden = !navigator.share;
+    // Oben anfangen: sonst steht man mitten im vorigen Protokoll.
+    window.scrollTo({ top: 0 });
   } catch (e) {
     toast("Eintrag: " + e.message);
   }
 }
+
+$("#btn-teilen-verlauf").addEventListener("click", async () => {
+  if (!letztesMarkdown || !navigator.share) return;
+  const datei = new File([letztesMarkdown.text], letztesMarkdown.name,
+                         { type: "text/markdown" });
+  try {
+    if (navigator.canShare && navigator.canShare({ files: [datei] })) {
+      await navigator.share({ files: [datei], title: letztesMarkdown.name });
+    } else {
+      await navigator.share({ title: letztesMarkdown.name,
+                              text: letztesMarkdown.text });
+    }
+  } catch (e) { /* Abbruch durch Nutzer */ }
+});
 
 $("#btn-zurueck").addEventListener("click", () => {
   $("#eintrag-detail").hidden = true;
