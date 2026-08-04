@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sprecher-Analyse</title>
+<meta name="theme-color" content="#f5f5f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#101014" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Sprecher">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" type="image/png" href="icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <h1>Sprecher-Analyse</h1>
+  <div class="row">
+    <span id="gpu-status" class="status" hidden
+          title="Verbleibendes GPU-Tageskontingent"></span>
+    <span id="token-status" class="status" hidden></span>
+    <button id="btn-key" class="icon-btn" title="Einstellungen"
+            aria-label="Einstellungen">
+      <svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor"
+           aria-hidden="true">
+        <path d="M19.14 12.94c.04-.3.06-.61.06-.94s-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96a7.03 7.03 0 0 0-1.62-.94l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84a.48.48 0 0 0-.48.41l-.36 2.54c-.59.24-1.13.56-1.62.94l-2.39-.96a.48.48 0 0 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.48-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.49.49 0 0 0-.12-.61l-2.01-1.58ZM12 15.6a3.6 3.6 0 1 1 0-7.2 3.6 3.6 0 0 1 0 7.2Z"/>
+      </svg>
+    </button>
+  </div>
+</header>
+
+<main>
+  <!-- Analyse -->
+  <section id="view-analyse" class="view">
+    <div id="rec-area" class="card">
+      <button id="btn-datei" class="primary">Audiodatei auswählen</button>
+      <div class="dim klein mitte">Sprachmemo aus „Dateien“ oder iCloud.
+        Ohne Audio geht es nicht — die Sprechertrennung wird daraus
+        gemessen.</div>
+      <!-- Nebenweg: bewusst als schlichter Textlink, nicht als zweite
+           Hauptaktion — aufgenommen wird in aller Regel in Sprachmemos. -->
+      <button id="btn-record" class="textlink">oder direkt hier aufnehmen</button>
+      <div id="rec-status" class="dim klein mitte" hidden></div>
+      <!-- Kein enger Filter: iOS blendet sonst m4a-Dateien aus iCloud aus. -->
+      <input type="file" id="file-input" hidden>
+    </div>
+
+    <div id="anleitung" class="card">
+      <ol class="schritte">
+        <li><b>Meeting aufnehmen</b><span class="dim klein">
+          mit Sprachmemos auf dem iPhone</span></li>
+        <li><b>Audiodatei hier auswählen <span class="marke">nötig</span></b>
+          <span class="dim klein">
+          Aus der Aufnahme kommt, wer wann gesprochen hat</span></li>
+        <li><b>Transkript einfügen
+          <span class="marke bonus">Bonus</span></b>
+          <span class="dim klein">
+          Aus Sprachmemos kopieren — macht den Wortlaut genauer. Ohne das
+          erkennt die App die Wörter selbst</span></li>
+        <li><b>Als Markdown sichern</b><span class="dim klein">
+          Sprecher benennen, herunterladen oder teilen</span></li>
+      </ol>
+    </div>
+
+    <div id="audio-panel" class="card" hidden>
+      <div class="row">
+        <span id="audio-name" class="grow"></span>
+        <button id="btn-verwerfen" class="icon-btn" title="Verwerfen">✕</button>
+      </div>
+      <audio id="audio-preview" controls></audio>
+      <details id="transkript-box" open>
+        <summary><b>Transkript aus Sprachmemos</b>
+          <span class="marke bonus">Bonus</span></summary>
+        <p class="dim klein">Rein optional. In Sprachmemos die Aufnahme
+          öffnen, Transkript anzeigen, kopieren, hier einfügen. Der Text wird
+          dann wortgetreu übernommen und nur noch den Sprechern zugeordnet —
+          genauer und schneller als eigene Erkennung. Leer lassen, wenn die
+          App die Wörter selbst erkennen soll; die Sprechertrennung kommt so
+          oder so aus der Audiodatei.</p>
+        <textarea id="transkript" rows="4"
+                  placeholder="Transkript hier einfügen …"></textarea>
+        <div id="transkript-info" class="dim klein"></div>
+        <label class="row opt">
+          <span class="grow">Zusätzlich selbst erkennen
+            <span class="dim klein">Markiert strittige Wörter — verdoppelt
+              aber die Rechenzeit</span></span>
+          <input id="abgleich" type="checkbox">
+        </label>
+      </details>
+
+      <!-- Sichtbar statt unter „Optionen“: die automatische Schätzung
+           erkennt regelmäßig zu viele Sprecher, und wer das Meeting
+           aufgenommen hat, weiß die Zahl. -->
+      <label class="row opt">
+        <span class="grow">Anzahl Sprecher
+          <span class="dim klein">0 = automatisch schätzen</span></span>
+        <input id="num-speakers" type="number" min="0" max="8" value="0" inputmode="numeric">
+      </label>
+
+      <details id="optionen">
+        <summary>Optionen</summary>
+        <label class="opt-block">
+          <span>Namen & Begriffe (hilft der Erkennung)</span>
+          <input id="kontext" type="text" placeholder="z. B. Hedi, Marta, Kita, Entwicklungsgespräch">
+        </label>
+        <!-- Zwei Erkenner zur Wahl, damit sich dieselbe Aufnahme zweimal
+             laufen lässt und der Vergleich eine Zahl ergibt statt einer
+             Meinung. Das Ergebnis vermerkt, welches Modell es war. -->
+        <label class="row opt">
+          <span class="grow">Worterkennung
+            <span class="dim klein">Whisper ist erprobt, Qwen der
+              Vergleich</span></span>
+          <select id="modell">
+            <option value="whisper" selected>Whisper (deutsch)</option>
+            <option value="qwen">Qwen3-ASR</option>
+          </select>
+        </label>
+        <label class="row opt">
+          <span class="grow">Sprache</span>
+          <select id="sprache">
+            <option value="german" selected>Deutsch</option>
+            <option value="english">Englisch</option>
+            <option value="french">Französisch</option>
+            <option value="spanish">Spanisch</option>
+            <option value="italian">Italienisch</option>
+            <option value="turkish">Türkisch</option>
+            <option value="">Automatisch</option>
+          </select>
+        </label>
+      </details>
+      <button id="btn-analyse" class="primary">Analysieren</button>
+    </div>
+
+    <div id="fortsetzen" class="card" hidden>
+      <div id="fortsetzen-text">Eine begonnene Analyse wurde unterbrochen.</div>
+      <button id="btn-fortsetzen" class="primary">Analyse fortsetzen</button>
+    </div>
+
+    <div id="progress" class="card center" hidden>
+      <div class="spinner"></div>
+      <div id="progress-text" class="dim">Analysiere …</div>
+      <div class="dim klein">Läuft seit <span id="progress-zeit">0:00</span>.</div>
+      <!-- Der Hinweis wechselt, sobald der Auftrag im Space angelegt ist.
+           Vorher wäre „du kannst schließen“ schlicht falsch: bricht der
+           Upload ab, entsteht nie ein Auftrag. -->
+      <div id="progress-hinweis" class="dim klein mitte">Bitte geöffnet
+        lassen, bis die Aufnahme übertragen ist.</div>
+    </div>
+
+    <div id="ergebnis"></div>
+  </section>
+
+  <!-- Verlauf -->
+  <section id="view-verlauf" class="view" hidden>
+    <div id="verlauf-liste"></div>
+    <div id="eintrag-detail" hidden>
+      <!-- Bleibt beim Scrollen stehen: ein Protokoll ist lang, und der
+           Knopf zum Herunterladen lag vorher dahinter. -->
+      <div class="detail-kopf row">
+        <button id="btn-zurueck" class="ghost">← Verlauf</button>
+        <button id="btn-download" class="primary knapp">⬇︎ Markdown</button>
+        <button id="btn-teilen-verlauf" class="ghost" hidden>Teilen</button>
+      </div>
+      <div id="eintrag-inhalt" class="card md"></div>
+    </div>
+  </section>
+</main>
+
+<nav class="tabbar">
+  <button data-view="analyse" class="tab active">
+    <span class="tab-icon">🎙️</span><span>Analyse</span>
+  </button>
+  <button data-view="verlauf" class="tab">
+    <span class="tab-icon">📋</span><span>Verlauf</span>
+  </button>
+</nav>
+
+<!-- Login -->
+<div id="login" class="overlay" hidden>
+  <div class="sheet">
+    <div class="sheet-kopf">
+      <h2>Einstellungen</h2>
+      <button id="btn-schliessen" class="icon-btn" title="Schließen"
+              aria-label="Schließen" hidden>✕</button>
+    </div>
+    <p class="dim">Bitte den Zugangsschlüssel der App eingeben.</p>
+    <div id="login-status" class="dim klein"></div>
+    <input id="key-input" type="text" placeholder="Zugangsschlüssel"
+           autocomplete="off" autocapitalize="none" autocorrect="off"
+           spellcheck="false">
+    <input id="hf-input" type="text" placeholder="Hugging-Face-Token (hf_…)"
+           autocomplete="off" autocapitalize="none" autocorrect="off"
+           spellcheck="false">
+    <p class="dim klein">Das HF-Token sorgt dafür, dass dein eigenes
+      GPU-Kontingent genutzt wird.</p>
+    <button id="btn-login" class="primary">Weiter</button>
+    <div id="login-fehler" class="fehler"></div>
+
+    <button id="btn-push-test" class="ghost breit">Probe-Benachrichtigung
+      senden</button>
+    <div id="push-status" class="dim klein"></div>
+
+    <details id="glossar-box">
+      <summary>Glossar ansehen</summary>
+      <p class="dim klein">Wiederkehrende Namen und Begriffe werden nach jeder
+        Analyse automatisch gesammelt und der Erkennung als Vorwissen
+        mitgegeben. Änderungen sind selten nötig — die Reihenfolge legt fest,
+        was Vorrang hat.</p>
+      <label class="opt-block">
+        <span>Begriffe</span>
+        <textarea id="g-begriffe" rows="6"></textarea>
+      </label>
+      <label class="opt-block">
+        <span>Sprechernamen</span>
+        <textarea id="g-sprecher" rows="3"></textarea>
+      </label>
+      <button id="btn-glossar-speichern" class="ghost breit">Glossar sichern</button>
+    </details>
+  </div>
+</div>
+
+<div id="toast" hidden></div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

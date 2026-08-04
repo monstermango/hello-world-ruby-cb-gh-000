@@ -1,0 +1,287 @@
+:root {
+  --primary: #5b5bd6;
+  --bg: #f5f5f7;
+  --fläche: #ffffff;
+  --text: #1c1c1e;
+  --dim: #6e6e73;
+  --linie: rgba(0, 0, 0, .08);
+  --blase: rgba(120, 120, 128, .12);
+  --warn-bg: rgba(240, 173, 78, .18);
+  --gefahr: #e15759;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #101014;
+    --fläche: #1c1c21;
+    --text: #f2f2f7;
+    --dim: #98989f;
+    --linie: rgba(255, 255, 255, .1);
+    --blase: rgba(120, 120, 128, .22);
+  }
+}
+
+* { box-sizing: border-box; margin: 0 }
+[hidden] { display: none !important }
+html { -webkit-text-size-adjust: 100% }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg); color: var(--text);
+  font-size: 16px; line-height: 1.5;
+  padding-bottom: calc(64px + env(safe-area-inset-bottom));
+}
+
+.topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: calc(10px + env(safe-area-inset-top)) 16px 10px;
+  /* Aus demselben Grund deckend wie die untere Leiste. */
+  position: sticky; top: 0; background: var(--bg);
+  transform: translateZ(0); z-index: 5;
+}
+/* Der Titel darf nie umbrechen — sonst wächst die Kopfzeile auf zwei
+   Zeilen, sobald rechts ein Abzeichen dazukommt. Lieber kürzen. */
+.topbar h1 { font-size: 1.25rem; font-weight: 700; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; min-width: 0 }
+.topbar .row { flex: 0 0 auto }
+
+main { max-width: 640px; margin: 0 auto; padding: 8px 16px }
+
+.card {
+  background: var(--fläche); border-radius: 16px; padding: 16px;
+  margin: 12px 0; box-shadow: 0 1px 3px rgba(0, 0, 0, .06);
+}
+.center { display: flex; flex-direction: column; align-items: center; gap: 12px }
+.row { display: flex; align-items: center; gap: 10px }
+.grow { flex: 1; min-width: 0; overflow-wrap: anywhere }
+.dim { color: var(--dim); font-size: .9rem }
+.fehler { color: var(--gefahr); font-size: .9rem; min-height: 1.4em; margin-top: 8px }
+
+button { font: inherit; border: 0; cursor: pointer; color: inherit; background: none }
+.primary {
+  display: block; width: 100%; min-height: 50px; margin-top: 12px;
+  background: var(--primary); color: #fff; font-weight: 600; font-size: 1.05rem;
+  border-radius: 14px;
+}
+.primary:active { filter: brightness(.9) }
+.primary[disabled] { opacity: .5 }
+.ghost {
+  min-height: 44px; padding: 0 16px; border-radius: 12px;
+  border: 1px solid var(--linie); color: var(--primary); font-weight: 600;
+}
+.icon-btn { min-width: 44px; min-height: 44px; font-size: 1.35rem;
+  color: var(--dim); display: inline-flex; align-items: center;
+  justify-content: center }
+.icon-btn:active { opacity: .6 }
+.sheet-kopf { display: flex; align-items: center; justify-content: space-between;
+  margin: -6px -6px 6px 0 }
+.status { font-size: .72rem; padding: 3px 8px; border-radius: 999px;
+  background: var(--blase); color: var(--dim); white-space: nowrap }
+.status.warn { background: var(--warn-bg); color: var(--text) }
+
+.mitte { text-align: center }
+.textlink { display: block; width: 100%; min-height: 44px; margin-top: 10px;
+  color: var(--dim); font-size: .92rem; text-align: center;
+  text-decoration: underline; text-underline-offset: 3px }
+.textlink.aktiv { color: var(--gefahr); font-weight: 600;
+  text-decoration: none }
+#rec-status.laeuft::before {
+  content: ""; display: inline-block; width: 9px; height: 9px;
+  margin-right: 7px; border-radius: 50%; background: var(--gefahr);
+  animation: puls 1.4s infinite }
+
+/* Kennzeichnet, was die App wirklich braucht und was nur hilft. */
+.marke { display: inline-block; margin-left: 8px; padding: 1px 8px;
+  border-radius: 999px; font-size: .72rem; font-weight: 600;
+  vertical-align: 2px; white-space: nowrap;
+  background: var(--warn-bg); color: var(--text) }
+.marke.bonus { background: var(--blase); color: var(--dim) }
+
+.schritte { margin: 0; padding-left: 26px }
+.schritte li { margin: 10px 0 }
+.schritte li b { display: block }
+.schritte li span { display: block; margin-top: 1px }
+/* Muss die Blockregel darüber schlagen, sonst rutscht die Marke
+   in eine eigene Zeile statt neben die Überschrift. */
+.schritte li .marke { display: inline-block; margin-top: 0 }
+
+.rec-btn {
+  width: 48px; height: 48px; flex: 0 0 48px; border-radius: 50%;
+  background: var(--primary); color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 2px 8px rgba(91, 91, 214, .35);
+  transition: transform .15s;
+}
+.rec-btn:active { transform: scale(.94) }
+.rec-btn.aktiv { background: var(--gefahr); animation: puls 1.4s infinite }
+@keyframes puls {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(225, 87, 89, .45) }
+  50% { box-shadow: 0 0 0 16px rgba(225, 87, 89, 0) }
+}
+
+audio { width: 100%; margin: 10px 0 }
+details { margin: 8px 0 }
+/* Kein Flex: sonst werden Auszeichnungen im Text zu eigenen Spalten */
+summary { min-height: 44px; padding: 11px 0; color: var(--dim) }
+summary b { color: var(--text) }
+/* Der Zusatz gehört unter die Beschriftung, nicht daneben. */
+.opt .klein { display: block; margin-top: 0 }
+.opt input {
+  width: 76px; min-height: 44px; text-align: center; font: inherit;
+  border: 1px solid var(--linie); border-radius: 10px;
+  background: var(--bg); color: var(--text);
+}
+.opt-block textarea {
+  width: 100%; margin-top: 6px; padding: 10px 12px; font-size: 16px;
+  font-family: inherit; line-height: 1.4; resize: vertical;
+  border: 1px solid var(--linie); border-radius: 10px;
+  background: var(--bg); color: var(--text);
+}
+.vorschlag { border: 1px solid var(--linie); background: var(--blase);
+  border-radius: 999px; padding: 7px 14px; margin: 4px 6px 4px 0;
+  font-size: .9rem; min-height: 38px }
+.vorschlag.drin { opacity: .45 }
+#transkript {
+  width: 100%; margin-top: 8px; padding: 10px 12px; font-size: 16px;
+  font-family: inherit; line-height: 1.4; resize: vertical;
+  border: 1px solid var(--linie); border-radius: 10px;
+  background: var(--bg); color: var(--text);
+}
+#transkript-info { margin-top: 6px }
+.opt-block { display: block; margin: 10px 0 }
+.opt-block input {
+  width: 100%; min-height: 44px; margin-top: 6px; padding: 0 12px;
+  font-size: 16px; font-family: inherit;
+  border: 1px solid var(--linie); border-radius: 10px;
+  background: var(--bg); color: var(--text);
+}
+.opt select {
+  min-height: 44px; padding: 0 10px; font-size: 16px; font-family: inherit;
+  border: 1px solid var(--linie); border-radius: 10px;
+  background: var(--bg); color: var(--text);
+}
+
+.spinner {
+  width: 32px; height: 32px; border-radius: 50%;
+  border: 3px solid var(--blase); border-top-color: var(--primary);
+  animation: dreh .8s linear infinite;
+}
+@keyframes dreh { to { transform: rotate(360deg) } }
+
+/* Ergebnis */
+.sa-meta { display: flex; gap: 14px; flex-wrap: wrap; color: var(--dim);
+  font-size: .9rem; margin-bottom: 12px }
+/* Die Tempozahlen stehen unter dem Balken und sollen sich vom Inhalt
+   abheben, ohne ihn zu verdrängen. */
+.sa-meta.tempo { font-size: .82rem; gap: 10px; margin: 2px 0 10px;
+  opacity: .85 }
+.chip { color: #fff; border-radius: 999px; padding: 2px 10px;
+  font-weight: 600; font-size: .85rem; white-space: nowrap }
+.sa-bar { display: flex; height: 16px; border-radius: 999px; overflow: hidden;
+  margin: 4px 0 10px }
+/* Flex mit Umbruch: die Legendeneinträge werden ohne Leerzeichen
+   aneinandergehängt, es gäbe sonst keine Umbruchstelle und die Zeile
+   schöbe die ganze Seite über den rechten Rand. */
+.sa-legs { display: flex; flex-wrap: wrap; gap: 2px 14px; line-height: 2.2 }
+.sa-leg { white-space: nowrap }
+.sa-leg .dim { font-size: .85rem }
+.sa-lane { position: relative; height: 14px; margin: 4px 0;
+  background: var(--blase); border-radius: 3px }
+.sa-lane div { position: absolute; top: 0; bottom: 0; border-radius: 3px }
+.sa-ticks { display: flex; justify-content: space-between;
+  font-size: .75rem; color: var(--dim) }
+.sa-timeline { margin: 16px 0 4px }
+.sa-h { margin: 20px 0 6px; font-size: 1.1rem; font-weight: 700 }
+.sa-msg { display: flex; gap: 10px; margin: 12px 0 }
+.sa-rail { flex: 0 0 4px; border-radius: 2px }
+.sa-msg-body { min-width: 0; flex: 1 }
+.sa-msg-head { font-size: .78rem; color: var(--dim); margin-bottom: 3px }
+.sa-bubble { background: var(--blase); padding: 10px 14px;
+  border-radius: 12px; overflow-wrap: anywhere }
+/* Unsichere Wörter: erkennbar, aber nicht schreiend — man soll den Text
+   weiter lesen können und trotzdem sehen, wo er wackelt. */
+.wackelig { color: var(--dim); text-decoration: underline dotted;
+  text-underline-offset: 3px; cursor: pointer }
+.wackelig:active { opacity: .6 }
+.berichtigt { font-weight: 600; text-decoration: none }
+.sa-warn { margin-top: 14px; padding: 10px 14px; border-radius: 10px;
+  background: var(--warn-bg); font-size: .9rem }
+#progress-hinweis { max-width: 26em }
+#progress-hinweis.frei { color: var(--primary); font-weight: 600 }
+.gelernt { margin-top: 16px; padding: 10px 14px; border-radius: 10px;
+  background: var(--blase); color: var(--dim); font-size: .85rem }
+.md-aktionen { margin-top: 16px }
+.breit { display: block; width: 100%; margin-top: 8px; text-align: center }
+.namen-zeile { margin: 10px 0 }
+.punkt { width: 14px; height: 14px; border-radius: 50%; flex: 0 0 14px }
+.namen-feld { flex: 1; min-height: 44px; padding: 0 12px; font-size: 16px;
+  font-family: inherit; border: 1px solid var(--linie); border-radius: 10px;
+  background: var(--bg); color: var(--text) }
+
+/* Verlauf */
+/* Klebt unter der Kopfzeile. Deren Höhe wird zur Laufzeit gemessen und
+   als Variable gesetzt — geraten wäre sie je nach Gerät und
+   Sicherheitsabstand daneben. */
+.detail-kopf {
+  position: sticky; top: var(--kopfhoehe, 56px); z-index: 4;
+  gap: 8px; padding: 8px 0; margin-bottom: 4px;
+  background: var(--bg); transform: translateZ(0);
+}
+.detail-kopf .primary { margin-top: 0 }
+/* Im Kopf nebeneinander statt jeder über die volle Breite. */
+.primary.knapp { width: auto; flex: 1; min-height: 44px; font-size: .95rem;
+  padding: 0 14px }
+.detail-kopf .ghost { flex: 0 0 auto; white-space: nowrap }
+
+.v-card { width: 100%; text-align: left; background: var(--fläche);
+  border-radius: 16px; padding: 14px 16px; margin: 10px 0;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .06) }
+.v-card:active { filter: brightness(.95) }
+.v-titel { font-weight: 600 }
+.v-meta { display: flex; gap: 14px; flex-wrap: wrap; color: var(--dim);
+  font-size: .85rem; margin-top: 2px }
+
+.md { overflow-x: auto }
+.md h1 { font-size: 1.25rem; margin: 8px 0 }
+.md h2 { font-size: 1.05rem; margin: 16px 0 6px }
+.md table { border-collapse: collapse; width: 100%; font-size: .9rem }
+.md th, .md td { border: 1px solid var(--linie); padding: 6px 8px; text-align: left }
+.md p { margin: 8px 0 }
+
+/* Tabbar */
+.tabbar {
+  position: fixed; bottom: 0; left: 0; right: 0; z-index: 5;
+  display: flex;
+  /* Deckend und ohne backdrop-filter. Ein durchscheinender Hintergrund
+     muss bei jedem Scrollschritt neu berechnet werden; iOS schiebt das
+     auf und die feststehende Leiste bleibt dann mitten im Text stehen.
+     Die eigene Komposition-Ebene hält sie an ihrem Platz. */
+  background: var(--fläche);
+  transform: translateZ(0);
+  will-change: transform;
+  border-top: 1px solid var(--linie);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.tab { flex: 1; min-height: 56px; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 2px;
+  font-size: .75rem; color: var(--dim) }
+.tab.active { color: var(--primary); font-weight: 600 }
+.tab-icon { font-size: 1.25rem }
+
+/* Login */
+.overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, .45);
+  display: flex; align-items: flex-start; z-index: 10; padding: 16px;
+  overflow-y: auto }
+.sheet { background: var(--fläche); width: 100%; border-radius: 20px;
+  padding: 24px 20px; max-width: 480px;
+  margin: max(48px, env(safe-area-inset-top)) auto auto }
+.sheet h2 { margin-bottom: 6px }
+.klein { font-size: .8rem; margin-top: 6px }
+.sheet input { width: 100%; min-height: 50px; margin-top: 14px; padding: 0 14px;
+  font-size: 16px; font-family: inherit;
+  border: 1px solid var(--linie); border-radius: 12px;
+  background: var(--bg); color: var(--text) }
+
+#toast { position: fixed; left: 16px; right: 16px;
+  bottom: calc(76px + env(safe-area-inset-bottom));
+  background: var(--text); color: var(--bg); padding: 12px 16px;
+  border-radius: 12px; text-align: center; z-index: 20;
+  font-size: .9rem; box-shadow: 0 4px 14px rgba(0, 0, 0, .25) }
