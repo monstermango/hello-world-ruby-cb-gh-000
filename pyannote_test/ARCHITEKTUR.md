@@ -37,6 +37,31 @@ Forced Alignment in Einzelwörter zerlegt, jedes Wort bekommt den zu
 diesem Zeitpunkt aktiven Sprecher. Satzweise Zuordnung verteilt kurze
 Wortwechsel systematisch falsch.
 
+## Zwei Erkenner zur Wahl
+
+Für die Worterkennung stehen zwei Modelle bereit:
+
+| Wahl | Modell | Bemerkung |
+|---|---|---|
+| `whisper` (Vorgabe) | `primeline/whisper-large-v3-german` | erprobt; nimmt Vorwissen nur nachträglich über das Glossar auf |
+| `qwen` | `Qwen/Qwen3-ASR-1.7B` | nimmt Vorwissen unmittelbar als Kontext entgegen; liefert keine Zeitmarken |
+
+Weil Qwen keine Zeitmarken liefert, läuft sein Text durch denselben
+Aligner (`MMS_FA`) wie ein eingefügtes Fremdtranskript. Damit
+unterscheidet sich zwischen zwei Läufen wirklich nur die Worterkennung —
+Sprechertrennung, Ausrichtung und alles danach bleiben gleich.
+
+Das ist der ganze Zweck der Auswahl: dieselbe Aufnahme zweimal laufen
+lassen (Transkriptfeld dabei leer), beide Ergebnisse mit
+`tests/wortfehlerrate.py` gegen das Transkript aus Sprachmemos messen und
+danach begründet entscheiden. Welches Modell ein Protokoll erzeugt hat,
+steht in dessen Frontmatter unter `modell`; ohne das ließe sich eine
+gemessene Rate hinterher keinem Erkenner mehr zuordnen.
+
+Die Gewichte werden **vor** der ersten GPU-Reservierung geholt. Innerhalb
+wäre der Download aus dem reservierten Zeitfenster bezahlt, und der erste
+Abschnitt liefe mittendrin auf.
+
 ## Aufteilung des Backends
 
 | Datei | Inhalt | Testbar ohne GPU |

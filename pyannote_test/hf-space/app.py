@@ -893,7 +893,15 @@ def _auftrag_lauf(jid, sid, num_speakers, sprache, modell=None):
         if (modell or "").strip().lower() == "qwen":
             # Vor der ersten GPU-Reservierung, nicht darin.
             takt("Modell holen"); j.update(schritt="Modell holen")
-            _qwen_bereitstellen()
+            try:
+                _qwen_bereitstellen()
+            except Exception as ex:
+                # Beim ersten Lauf dauert das Minuten und kann an allem
+                # scheitern. Dann soll dastehen, woran — nicht ein
+                # Netzwerkfehler ohne Zusammenhang.
+                raise RuntimeError(
+                    f"Qwen3-ASR konnte nicht geladen werden "
+                    f"({type(ex).__name__}). Mit Whisper läuft es weiter.")
 
         takt("Sprecher erkennen"); j.update(schritt="Sprecher erkennen")
         r = diarisieren_api(APP_KEY, sid, num_speakers, sprache, modell)
