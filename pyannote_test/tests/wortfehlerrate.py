@@ -27,7 +27,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hf-space"))
 
-from kern import protokoll_text, wortfehlerrate  # noqa: E402
+from kern import _frontmatter, protokoll_text, wortfehlerrate  # noqa: E402
 
 
 def _lesen(pfad):
@@ -35,6 +35,15 @@ def _lesen(pfad):
     # Ein erzeugtes Markdown enthält Tabellen und Kopfdaten; davon darf
     # nichts in den Vergleich geraten.
     return protokoll_text(text) if "## Protokoll" in text else text
+
+
+def _modell(pfad):
+    """Welches Modell den gemessenen Text erzeugt hat, laut Kopfdaten."""
+    try:
+        fm, _ = _frontmatter(Path(pfad).read_text(encoding="utf-8"))
+    except OSError:
+        return None
+    return fm.get("modell")
 
 
 def main(argv):
@@ -47,7 +56,10 @@ def main(argv):
         return 2
 
     e = wortfehlerrate(ref, hyp)
-    print(f"\n  Vorlage      {e['woerter']} Wörter")
+    modell = _modell(argv[1])
+    # Zwei Raten ohne Modellnamen daneben sind zwei Zahlen ohne Aussage.
+    print(f"\n  Modell       {modell or 'nicht vermerkt'}")
+    print(f"  Vorlage      {e['woerter']} Wörter")
     print(f"  Fehlerrate   {e['rate']:.1%}")
     print(f"    ersetzt    {e['ersetzungen']}")
     print(f"    eingefügt  {e['einfuegungen']}")

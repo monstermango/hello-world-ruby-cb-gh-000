@@ -100,11 +100,23 @@
         <input id="num-speakers" type="number" min="0" max="8" value="0" inputmode="numeric">
       </label>
 
-      <details>
+      <details id="optionen">
         <summary>Optionen</summary>
         <label class="opt-block">
           <span>Namen & Begriffe (hilft der Erkennung)</span>
           <input id="kontext" type="text" placeholder="z. B. Hedi, Marta, Kita, Entwicklungsgespräch">
+        </label>
+        <!-- Zwei Erkenner zur Wahl, damit sich dieselbe Aufnahme zweimal
+             laufen lässt und der Vergleich eine Zahl ergibt statt einer
+             Meinung. Das Ergebnis vermerkt, welches Modell es war. -->
+        <label class="row opt">
+          <span class="grow">Worterkennung
+            <span class="dim klein">Whisper ist erprobt, Qwen der
+              Vergleich</span></span>
+          <select id="modell">
+            <option value="whisper" selected>Whisper (deutsch)</option>
+            <option value="qwen">Qwen3-ASR</option>
+          </select>
         </label>
         <label class="row opt">
           <span class="grow">Sprache</span>

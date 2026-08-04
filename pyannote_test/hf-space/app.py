@@ -92,6 +92,57 @@ def _asr_holen(sprache):
 
 asr = _asr_holen("german")
 
+# Zweite Erkennung zur Wahl: Qwen3-ASR, offene Gewichte unter Apache-2.0.
+# Kein transformers-Pipeline-Modell, sondern ein eigenes Paket mit eigener
+# Klasse — der Import wird deshalb abgesichert. Fehlt das Paket oder
+# scheitert es, bleibt die App mit Whisper vollständig benutzbar, statt
+# beim Start umzufallen.
+QWEN_MODELL = os.environ.get("QWEN_MODELL", "Qwen/Qwen3-ASR-1.7B")
+_qwen = {"modell": None, "fehler": None}
+
+# Qwen erwartet den Sprachnamen ausgeschrieben und groß, Whisper klein.
+QWEN_SPRACHEN = {
+    "german": "German", "english": "English", "french": "French",
+    "spanish": "Spanish", "italian": "Italian", "turkish": "Turkish",
+}
+
+
+def _qwen_holen():
+    if _qwen["modell"] is None and _qwen["fehler"] is None:
+        try:
+            from qwen_asr import Qwen3ASRModel
+            _qwen["modell"] = Qwen3ASRModel.from_pretrained(
+                QWEN_MODELL, dtype=torch.bfloat16, device_map="cuda:0",
+                max_inference_batch_size=8, max_new_tokens=448)
+        except Exception as e:
+            traceback.print_exc()
+            _qwen["fehler"] = f"{type(e).__name__}: {e}"
+    if _qwen["fehler"]:
+        raise RuntimeError(f"Qwen3-ASR nicht verfügbar: {_qwen['fehler']}")
+    return _qwen["modell"]
+
+
+def _qwen_bereitstellen():
+    """Holt die Gewichte vorab — bewusst außerhalb der GPU-Reservierung.
+
+    Whisper wird beim Start des Space geladen, Qwen erst bei Bedarf: mehrere
+    Gigabyte für jeden Kaltstart herunterzuladen, auch wenn niemand das
+    Modell wählt, wäre verschwendet. Der erste Abschnitt eines Laufs würde
+    den Download dann aber innerhalb seines reservierten Zeitfensters
+    bezahlen und mittendrin auflaufen. Also vorher, ohne GPU.
+    """
+    from huggingface_hub import snapshot_download
+    snapshot_download(QWEN_MODELL, token=HF_TOKEN or None)
+
+
+# Welcher Name am Ende im Protokoll steht. Ohne das lässt sich ein
+# gemessener Fehlerwert später keinem Modell mehr zuordnen.
+def _modell_name(wahl, sprache):
+    if wahl == "qwen":
+        return QWEN_MODELL
+    return ASR_MODELLE.get(sprache or "", ASR_MODELLE["*"])
+
+
 loader = Audio(sample_rate=16000, mono="downmix")
 
 # Modell zum Einpassen eines mitgelieferten Transkripts
@@ -332,7 +383,8 @@ def _pegel_messen(wav_pfad, turns=None):
             "uebersteuert": float((np.abs(x) > 0.995).mean())}
 
 
-def _asr_dauer(audio_path, start, ende, sprache=None, kontext=""):
+def _asr_dauer(audio_path, start, ende, sprache=None, kontext="",
+               wahl="whisper"):
     # Grosszuegiger als die reine Rechenzeit: der Temperatur-Rückfall
     # verwirft entgleiste Abschnitte und dekodiert sie erneut, im
     # schlimmsten Fall fünfmal. Das Budget ist eine Reservierung, keine
@@ -340,15 +392,62 @@ def _asr_dauer(audio_path, start, ende, sprache=None, kontext=""):
     return int(min(200, max(60, 40 + (ende - start) / 2)))
 
 
+def _ganz_einpassen(audio_path, ganz, start, ende):
+    """Verortet den Text eines ganzen Fensters selbst.
+
+    Nötig für jedes Modell ohne Zeitmarken: manche deutschen
+    Feinabstimmungen von Whisper liefern keine, Qwen3-ASR grundsätzlich
+    nicht. Beide laufen deshalb durch denselben Aligner — was ein Vergleich
+    der Modelle misst, ist dann wirklich nur die Worterkennung.
+    """
+    alle = [] if _ist_halluzination(ganz or "") else (ganz or "").split()
+    if not alle:
+        return []
+    rate = len(alle) / max(ende - start, 1.0)
+    treffer, _, _ = _aligniere_bereich(audio_path, alle, start, ende,
+                                       rate, schluss=True)
+    return [{"start": a, "ende": b, "text": alle[nr],
+             "sprache": None, "wert": wert}
+            for nr, a, b, wert in treffer]
+
+
+def _qwen_fenster(audio_path, start, ende, sprache, kontext):
+    """Erkennt ein Fenster mit Qwen3-ASR -> (Text, erkannte Sprache).
+
+    Qwen nimmt Vorwissen unmittelbar als Kontext entgegen, statt es wie bei
+    Whisper nachträglich über das Glossar zu korrigieren — Namen aus dem
+    Feld „Namen & Begriffe“ landen also direkt in der Erkennung.
+    """
+    wellenform, sr = loader.crop(audio_path, Segment(start, ende), mode="pad")
+    ergebnis = _qwen_holen().transcribe(
+        audio=(wellenform.squeeze(0).numpy(), sr),
+        context=kontext or "",
+        language=QWEN_SPRACHEN.get(sprache or ""))
+    erster = ergebnis[0] if ergebnis else None
+    text = (getattr(erster, "text", "") or "").strip()
+    # Bei Sprachwechseln steht dort „German,English“ — die erste zählt.
+    erkannt = (getattr(erster, "language", "") or "").split(",")[0].strip()
+    return text, (erkannt.lower() or None)
+
+
 @bucht_gpu
 @spaces.GPU(duration=_asr_dauer)
-def _transkribiere_gpu(audio_path, start, ende, sprache=None, kontext=""):
+def _transkribiere_gpu(audio_path, start, ende, sprache=None, kontext="",
+                       wahl="whisper"):
     """Transkribiert ein Fenster am Stück — voller Kontext, beste Qualität.
 
-    Die Sprache wird fest vorgegeben: sonst rät Whisper sie pro Abschnitt
-    neu und kippt dabei gern mitten im Gespräch in eine englische
+    Die Sprache wird fest vorgegeben: sonst rät das Modell sie pro
+    Abschnitt neu und kippt dabei gern mitten im Gespräch in eine englische
     Übersetzung.
     """
+    if wahl == "qwen":
+        ganz, sprache_erkannt = _qwen_fenster(audio_path, start, ende,
+                                              sprache, kontext)
+        worte = _ganz_einpassen(audio_path, ganz, start, ende)
+        for w in worte:
+            w["sprache"] = sprache_erkannt or sprache
+        return worte
+
     modell = _asr_holen(sprache)
     wellenform, sr = loader.crop(audio_path, Segment(start, ende), mode="pad")
     eingabe = {"array": wellenform.squeeze(0).numpy(), "sampling_rate": sr}
@@ -373,17 +472,8 @@ def _transkribiere_gpu(audio_path, start, ende, sprache=None, kontext=""):
         worte += _worte_einpassen(audio_path, text, float(ts[0]) + start,
                                   float(bis) + start, ende)
     if not worte:
-        # Manche Modelle (etwa deutsche Feinabstimmungen) liefern keine
-        # Zeitmarken. Dann den gesamten Text des Fensters selbst verorten.
-        ganz = (res.get("text") or "").strip()
-        alle = [] if _ist_halluzination(ganz) else ganz.split()
-        if alle:
-            rate = len(alle) / max(ende - start, 1.0)
-            treffer, _, _ = _aligniere_bereich(audio_path, alle, start, ende,
-                                               rate, schluss=True)
-            worte = [{"start": a, "ende": b, "text": alle[nr],
-                      "sprache": None, "wert": wert}
-                     for nr, a, b, wert in treffer]
+        worte = _ganz_einpassen(audio_path, (res.get("text") or "").strip(),
+                                start, ende)
 
     for w in worte:
         w["sprache"] = sprache_erkannt or sprache
@@ -776,7 +866,7 @@ def _fehler_deuten(ex):
     return f"{type(ex).__name__}: {ex}"
 
 
-def _auftrag_lauf(jid, sid, num_speakers, sprache):
+def _auftrag_lauf(jid, sid, num_speakers, sprache, modell=None):
     """Fährt die komplette Kette durch, ohne dass jemand zusieht."""
     j = AUFTRAEGE[jid]
     # Wo die Zeit hingeht, gemessen statt vermutet — sonst optimiert man
@@ -800,8 +890,13 @@ def _auftrag_lauf(jid, sid, num_speakers, sprache):
         except subprocess.CalledProcessError:
             raise RuntimeError("Audioformat konnte nicht gelesen werden.")
 
+        if (modell or "").strip().lower() == "qwen":
+            # Vor der ersten GPU-Reservierung, nicht darin.
+            takt("Modell holen"); j.update(schritt="Modell holen")
+            _qwen_bereitstellen()
+
         takt("Sprecher erkennen"); j.update(schritt="Sprecher erkennen")
-        r = diarisieren_api(APP_KEY, sid, num_speakers, sprache)
+        r = diarisieren_api(APP_KEY, sid, num_speakers, sprache, modell)
         if not r.get("ok"):
             raise RuntimeError(r.get("fehler", "Sprechererkennung fehlgeschlagen"))
         gesamt = max(1, int(r.get("abschnitte") or 1))
@@ -872,7 +967,8 @@ def _auftrag_lauf(jid, sid, num_speakers, sprache):
         _push_senden("Analyse fehlgeschlagen", j["fehler"][:120])
 
 
-def starten_api(key, sid, num_speakers, sprache=None, request: gr.Request = None):
+def starten_api(key, sid, num_speakers, sprache=None, modell=None,
+                request: gr.Request = None):
     """Stößt die Verarbeitung an und gibt sofort zurück."""
     if not _pruefe(key):
         return {"ok": False, "fehler": "Ungültiger Zugangsschlüssel."}
@@ -904,7 +1000,7 @@ def starten_api(key, sid, num_speakers, sprache=None, request: gr.Request = None
     # ist nachgemessen: eine Reservierung über 200 s lief so durch, weit
     # über dem anonymen Tagesbudget von 120 s.
     threading.Thread(target=_auftrag_lauf,
-                     args=(jid, sid, num_speakers, sprache),
+                     args=(jid, sid, num_speakers, sprache, modell),
                      daemon=True).start()
     return {"ok": True, "auftrag": jid, "mit_token": mit_token}
 
@@ -1203,7 +1299,7 @@ def _audio_bereitstellen(s):
     s["dauer"] = loader.get_duration(s["wav"])
 
 
-def diarisieren_api(key, sid, num_speakers, sprache=None):
+def diarisieren_api(key, sid, num_speakers, sprache=None, modell=None):
     """Schritt 2: Sprecher über die gesamte Aufnahme erkennen."""
     if not _pruefe(key):
         return {"ok": False, "fehler": "Ungültiger Zugangsschlüssel."}
@@ -1222,9 +1318,11 @@ def diarisieren_api(key, sid, num_speakers, sprache=None):
             sprache = _sprache_gpu(s["wav"], turns[0]["start"] if turns else 0.0)
         except Exception:
             sprache = None
+    wahl = "qwen" if (modell or "").strip().lower() == "qwen" else "whisper"
     s.update(turns=turns, stats=stats, overlaps=overlaps, chunks=[],
              abdruecke=abdruecke, abgleich_chunks=[], phase="haupt",
              sprache=sprache, fa_zeit=0.0, fa_wort=0, fertig=set(),
+             modell=wahl, modell_name=_modell_name(wahl, sprache),
              fenster=_fenstergrenzen(turns, s["dauer"]))
     s["qualitaet"] = aufnahme_urteil(_pegel_messen(s["wav"], turns) or {})
 
@@ -1289,7 +1387,8 @@ def transkribieren_api(key, sid, index):
         s[ziel_liste] += _transkribiere_gpu(s["wav"], s["fenster"][i],
                                             s["fenster"][i + 1],
                                             s.get("sprache"),
-                                            s.get("kontext", ""))
+                                            s.get("kontext", ""),
+                                            s.get("modell", "whisper"))
     except Exception as e:
         traceback.print_exc()
         return {"ok": False,
@@ -1329,6 +1428,10 @@ def _daten_sichern(s):
             daten["korrekturen"] = []
         daten["qualitaet"] = s.get("qualitaet")
         daten["strittig"] = s.get("strittig", [])
+        # Nur wenn selbst erkannt wurde: bei eingepasstem Transkript stammt
+        # der Wortlaut von Apple, nicht von einem Modell hier.
+        if not s.get("worte"):
+            daten["modell"] = s.get("modell_name")
         s["daten"] = daten
     return s["daten"]
 
@@ -1361,13 +1464,15 @@ def abschliessen_api(key, sid):
 
 
 def analysieren_api(key, audio, num_speakers, sprache=None, transkript=None,
-                    kontext=None):
+                    kontext=None, modell=None):
     """Alle Schritte in einem Aufruf — nur für kurze Aufnahmen geeignet."""
     vor = vorbereiten_api(key, audio, transkript, kontext)
     if not vor.get("ok"):
         return vor
     sid = vor["id"]
-    dia = diarisieren_api(key, sid, num_speakers, sprache)
+    if (modell or "").strip().lower() == "qwen":
+        _qwen_bereitstellen()
+    dia = diarisieren_api(key, sid, num_speakers, sprache, modell)
     if not dia.get("ok"):
         return dia
     i = 0
@@ -1502,11 +1607,13 @@ with gr.Blocks(title="Sprecher-Analyse API") as demo:
         transkript_feld = gr.Textbox(
             label="Eigenes Transkript (leer = selbst erkennen)", lines=4)
         kontext_feld = gr.Textbox(label="Namen & Begriffe (optional)")
+        modell_feld = gr.Radio(["whisper", "qwen"], value="whisper",
+                               label="Erkennung")
         b_analyse = gr.Button("Analysieren", variant="primary")
         out_analyse = gr.JSON()
         b_analyse.click(analysieren_api,
                         [key, audio, num_speakers, sprache_feld, transkript_feld,
-                         kontext_feld],
+                         kontext_feld, modell_feld],
                         out_analyse, api_name="analysieren")
     with gr.Tab("Schrittweise (lange Aufnahmen)"):
         sid = gr.Textbox(label="Sitzungs-ID")
@@ -1518,8 +1625,8 @@ with gr.Blocks(title="Sprecher-Analyse API") as demo:
             [key, audio, transkript_feld, kontext_feld, abgleich_feld],
             gr.JSON(), api_name="vorbereiten")
         gr.Button("2 · Sprecher erkennen").click(
-            diarisieren_api, [key, sid, num_speakers, sprache_feld], gr.JSON(),
-            api_name="diarisieren")
+            diarisieren_api, [key, sid, num_speakers, sprache_feld, modell_feld],
+            gr.JSON(), api_name="diarisieren")
         gr.Button("3 · Abschnitt transkribieren").click(
             transkribieren_api, [key, sid, idx], gr.JSON(),
             api_name="transkribieren")
@@ -1533,7 +1640,8 @@ with gr.Blocks(title="Sprecher-Analyse API") as demo:
                           out_speichern, api_name="speichern")
         b_starten = gr.Button("Im Hintergrund verarbeiten")
         b_starten.click(starten_api,
-                        [key, sid, gr.Number(value=0), gr.Textbox(value="german")],
+                        [key, sid, gr.Number(value=0), gr.Textbox(value="german"),
+                         modell_feld],
                         gr.JSON(), api_name="starten")
         gr.Button("Auftragsstand").click(
             auftrag_api, [key, gr.Textbox(label="Auftrag")], gr.JSON(),

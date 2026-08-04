@@ -796,6 +796,24 @@ def test_eigene_sprechernamen_ersetzen_die_standardnamen():
     assert "Sprecher 2" in md, "unbenannte Sprecher behalten den Standardnamen"
 
 
+def test_markdown_vermerkt_das_modell():
+    d = _beispiel_daten()
+    d["modell"] = "Qwen/Qwen3-ASR-1.7B"
+    fm, _ = kern._frontmatter(kern._markdown(
+        d, "a.m4a", datetime.datetime(2026, 7, 28, 9, 5)))
+    assert fm["modell"] == "Qwen/Qwen3-ASR-1.7B", (
+        "ohne Modell im Kopf lässt sich eine gemessene Fehlerrate später "
+        "keinem Erkenner mehr zuordnen")
+
+
+def test_markdown_ohne_modell_bleibt_ohne_zeile():
+    # Bei eingepasstem Fremdtranskript hat kein Modell hier den Wortlaut
+    # erzeugt — dann darf auch keines behauptet werden.
+    fm, _ = kern._frontmatter(kern._markdown(
+        _beispiel_daten(), "a.m4a", datetime.datetime(2026, 7, 28, 9, 5)))
+    assert "modell" not in fm
+
+
 def test_frontmatter_vertraegt_text_ohne_kopf():
     fm, rumpf = kern._frontmatter("# Nur Text")
     assert fm == {} and rumpf == "# Nur Text"

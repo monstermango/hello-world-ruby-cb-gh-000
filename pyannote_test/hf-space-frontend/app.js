@@ -480,12 +480,14 @@ $("#btn-analyse").addEventListener("click", () => {
 
     const spr = $("#sprache").value;
     localStorage.setItem("sa_sprache", spr);
+    const mdl = $("#modell").value;
+    localStorage.setItem("sa_modell", mdl);
 
     // Ab hier läuft die Arbeit im Space weiter, auch wenn das Telefon
     // schläft oder die App geschlossen wird. Der Browser fragt nur noch
     // nach dem Stand.
     const start = await rufeHartnaeckig("/starten",
-                                        [schluessel, vor.id, n, spr]);
+                                        [schluessel, vor.id, n, spr, mdl]);
     if (!start.ok) throw new Error(start.fehler);
     // Ohne Kennung an der Startanfrage läuft die GPU-Zeit nicht über dein
     // Konto. Das soll auffallen, bevor die Aufnahme durchgelaufen ist.
@@ -709,7 +711,8 @@ $("#btn-fortsetzen").addEventListener("click", () => {
       melde("Erkenne Sprecher …");
       const n = parseInt($("#num-speakers").value, 10) || 0;
       const dia = await rufeHartnaeckig(
-        "/diarisieren", [schluessel, lauf.id, n, $("#sprache").value]);
+        "/diarisieren",
+        [schluessel, lauf.id, n, $("#sprache").value, $("#modell").value]);
       if (!dia.ok) throw new Error(dia.fehler);
       lauf.abschnitte = dia.abschnitte;
       lauf.i = 0;
@@ -733,9 +736,13 @@ function ergebnisAnzeigen(d, gespeichert) {
   const spracheRoh = d.sprache || daten.sprache;
   const sprache = spracheRoh
     ? `<span>🌐 ${esc(SPRACHEN[spracheRoh] || spracheRoh)}</span>` : "";
+  // Nur wenn selbst erkannt wurde. Bei eingepasstem Transkript stammt der
+  // Wortlaut von Apple und kein Modell hier hat ihn erzeugt.
+  const modell = daten.modell
+    ? `<span>🧠 ${esc(daten.modell.split("/").pop())}</span>` : "";
   const meta =
     `<div class="sa-meta"><span>🕒 ${zeit(daten.dauer)} min</span>` +
-    `<span>👥 ${labels.length} Sprecher</span>${sprache}` +
+    `<span>👥 ${labels.length} Sprecher</span>${sprache}${modell}` +
     `<span>📅 ${wann.toLocaleString("de-DE", { dateStyle: "short", timeStyle: "short" })}</span></div>`;
 
   // Wie schnell gearbeitet wurde. Der Echtzeitfaktor ist die Zahl, an der
@@ -1112,6 +1119,8 @@ $("#transkript").addEventListener("input", () => {
 
 const gemerkteSprache = localStorage.getItem("sa_sprache");
 if (gemerkteSprache !== null) $("#sprache").value = gemerkteSprache;
+const gemerktesModell = localStorage.getItem("sa_modell");
+if (gemerktesModell !== null) $("#modell").value = gemerktesModell;
 $("#hf-input").value = hfToken;
 $("#kontext").value = localStorage.getItem("sa_kontext") || "";
 

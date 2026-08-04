@@ -31,7 +31,7 @@ export class Client {
     if (ep === "/glossar_speichern") { window._glossar = daten; return {data: [{ok: true, begriffe: (daten[1]||"").split(/\\s*\\n\\s*/).filter(Boolean), sprecher: (daten[2]||"").split(/\\s*\\n\\s*/).filter(Boolean)}]}; }
     // Bewusst langsam: nur so faellt auf, wenn der Aufrufer die Antwort
     // nicht abwartet und den Token-Status zu frueh abliest.
-    if (ep === "/starten") { window._diarNum = daten[2]; window._auftragStand = 0; return {data: [{ok: true, auftrag: "j1"}]}; }
+    if (ep === "/starten") { window._diarNum = daten[2]; window._modell = daten[4]; window._auftragStand = 0; return {data: [{ok: true, auftrag: "j1"}]}; }
     if (ep === "/auftrag") {
       window._auftragStand = (window._auftragStand || 0) + 1;
       // Erst laufend, dann fertig — so wird auch das Nachfragen geprüft.
@@ -88,7 +88,7 @@ window._ergebnis = {ok: true,
       tempo: {woerter: 1772, verarbeitung_s: 184.0, wpm: 577.8, echtzeit: 4.8},
       namen: {A: "Sprecher 1", B: "Sprecher 2"},
       farben: {A: "#4e79a7", B: "#f28e2b"},
-      daten: {dauer: 23.4,
+      daten: {dauer: 23.4, modell: "Qwen/Qwen3-ASR-1.7B",
         segmente: [
           {start: 0, ende: 6.1, label: "A", text: "Guten Tag, hier spricht der erste Sprecher.", unsicher: [4]},
           {start: 7, ende: 12.7, label: "B", text: "Hallo, ich bin die zweite Sprecherin."},
@@ -252,6 +252,12 @@ async def main():
         kopf = await page.locator("#transkript-box summary").inner_text()
         assert "Bonus" in kopf, f"Transkript nicht als Bonus markiert: {kopf!r}"
         await page.fill("#num-speakers", "3")
+        # Die zweite Erkennung muss wählbar sein — sonst gibt es beim
+        # Vergleich zweier Modelle nichts umzuschalten. Sie steht bewusst
+        # unter „Optionen“: umgestellt wird selten, die Sprecherzahl
+        # dagegen bei fast jedem Lauf.
+        await page.evaluate("document.querySelector('#optionen').open = true")
+        await page.select_option("#modell", "qwen")
 
         await page.click("#btn-analyse")
         # Vor dem Auftrag darf nicht stehen, man könne die App schließen —
@@ -304,6 +310,11 @@ async def main():
         blase = await page.locator(".sa-bubble").first.inner_text()
         assert blase == "Guten Tag, hier spricht der erste Sprecher.", blase
 
+        # 4a2b. Am Ergebnis muss ablesbar sein, welcher Erkenner es war —
+        #       zwei Läufe zum Vergleichen sehen sonst gleich aus.
+        kopfzeile = await page.locator(".sa-meta").first.inner_text()
+        assert "Qwen3-ASR-1.7B" in kopfzeile, kopfzeile
+
         # 4a3. Schwache Aufnahme wird benannt und erklärt.
         qual = await page.locator(".w-audio").inner_text()
         assert "Aufnahmequalität" in qual and "näher" in qual, qual
@@ -318,6 +329,15 @@ async def main():
         gewuenscht = await page.evaluate("window._diarNum")
         assert gewuenscht == 3, \
             f"Sprecherzahl nicht ans Backend durchgereicht: {gewuenscht}"
+
+        # Die Modellwahl genauso: eine Auswahl, die nicht ankommt, misst
+        # zweimal dasselbe Modell und der Vergleich wäre wertlos.
+        gewaehlt = await page.evaluate("window._modell")
+        assert gewaehlt == "qwen", \
+            f"Modellwahl nicht ans Backend durchgereicht: {gewaehlt!r}"
+        assert await page.evaluate(
+            "localStorage.getItem('sa_modell')") == "qwen", \
+            "Modellwahl nicht gemerkt"
 
         # Die Verarbeitung läuft jetzt im Space; der Browser fragt nur nach.
         # Genau das muss geprüft sein — sonst hängt sie wieder am Telefon.

@@ -334,6 +334,11 @@ def _markdown(daten, quelle, zeitpunkt, namen=None):
         "redeanteile_s": {namen[lb]: st["dauer"]
                           for lb, st in daten["stats"].items()},
     }
+    # Welches Modell den Wortlaut erzeugt hat. Ohne das lässt sich eine
+    # später gemessene Wortfehlerrate keinem Modell mehr zuordnen — und
+    # genau dafür gibt es überhaupt eine Auswahl.
+    if daten.get("modell"):
+        frontmatter["modell"] = daten["modell"]
     # Ins Frontmatter, damit sich die Läufe später über den ganzen Ordner
     # hinweg vergleichen lassen — sonst ist die Zahl nach dem Schließen weg.
     t = daten.get("tempo")

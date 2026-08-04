@@ -2,3 +2,9 @@ pyannote.audio>=4.0
 transformers>=4.45
 pyyaml
 pywebpush
+# Zweite Erkennung zur Wahl. Das Paket schreibt transformers und accelerate
+# exakt fest und zieht gradio ohne Obergrenze nach — deshalb steht die
+# Fassung des Space-SDKs hier ausdrücklich, damit der Auflöser sie nicht
+# unter der laufenden App wegzieht.
+gradio==5.35.0
+qwen-asr==0.0.6
